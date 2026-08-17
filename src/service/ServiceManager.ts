@@ -63,6 +63,7 @@ export class ServiceManager extends EventEmitter {
     const child = spawn(kernelNode, [dshBin, 'web', '--port', String(port)], {
       env: { ...process.env, ...collectKernelKeys() },  // §12.2：注入 provider Key
       stdio: ['ignore', kernelLogFd(), kernelLogFd()],  // 内核 stdout/stderr 落盘，不走管道
+      windowsHide: true,  // 不弹黑色控制台窗口（console 子系统子进程默认会弹窗）
     });
     this.child = child;
     child.on('exit', (code) => {
