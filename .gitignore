@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out/
+*.log
+*.enc
+secrets/
+.dsh-home/
+.dsh-home-test/
+.test-user-data/
+.DS_Store

@@ -1,0 +1,10 @@
+{
+  "args": ["web", "--port", "<预占端口>"],
+  "urlPattern": "http://127.0.0.1:(\\d+)",
+  "trustedHostFlagNeeded": false,
+  "healthPath": "/",
+  "dsHome": "<userData>/dsh-home",
+  "providerSync": "direct",
+  "kernel": "bundled-node22",
+  "kernelNode": "resources/node/node.exe (v22.21.0)"
+}

@@ -1,0 +1,20 @@
+appId: com.tt.deepharness
+productName: TT DeepSeek Harness Desktop
+asar: false
+directories:
+  output: out
+  buildResources: resources
+files:
+  - dist/**
+  - package.json
+extraResources:
+  - from: resources/node
+    to: node
+win:
+  target: [nsis]
+  signAndEditExecutable: false
+mac:
+  target: [dmg]
+  category: public.app-category.developer-tools
+linux:
+  target: [AppImage, deb]
