@@ -2,355 +2,222 @@
 
 > **非官方项目**：基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`@deepseek-ai/dsh`）的 Windows 桌面封装，与 DeepSeek 官方无隶属关系。
 
-**把 DeepSeek Harness 的 Web UI 装进原生桌面窗口：托盘常驻 · 内核自愈 · Provider 加密管理 · 主题联动**
+把 DeepSeek Harness 的 AI 编程助手界面装进原生 Windows 窗口：托盘常驻、内核自愈、关闭行为可选、主题联动。
 
-![Electron](https://img.shields.io/badge/Electron-33-47848F) ![Node](https://img.shields.io/badge/Bundled%20Node-22.21.0-339933) ![DSH](https://img.shields.io/badge/dsh-0.1.0--rc.6-4D7CFE) ![License](https://img.shields.io/badge/license-MIT-green)
+![Electron](https://img.shields.io/badge/Electron-33-47848F) ![Node](https://img.shields.io/badge/Bundled%20Node-22.21.0-339933) ![DSH](https://img.shields.io/badge/dsh-0.1.0--rc.6-4D7CFE) ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6)
 
 ---
 
 ## 目录
 
-- [特性](#特性)
-- [架构](#架构)
-- [环境要求](#环境要求)
-- [快速开始](#快速开始)
-- [使用指南](#使用指南)
-- [数据与安全](#数据与安全)
-- [Provider 与密钥](#provider-与密钥)
+- [这是什么](#这是什么)
+- [安装](#安装)
+  - [方式一：安装包安装（推荐）](#方式一安装包安装推荐)
+  - [方式二：从源码运行](#方式二从源码运行)
+- [使用步骤（第一次打开后）](#使用步骤第一次打开后)
+- [关闭窗口行为（托盘 or 退出）](#关闭窗口行为托盘-or-退出)
 - [主题](#主题)
-- [打包与发布](#打包与发布)
-- [测试与验证](#测试与验证)
-- [项目结构](#项目结构)
+- [数据与安全](#数据与安全)
 - [常见问题（FAQ）](#常见问题faq)
-- [路线图](#路线图)
+- [开发相关](#开发相关)
 - [声明](#声明)
 
 ---
 
-## 特性
+## 这是什么
 
-| 特性 | 说明 |
-|---|---|
-| 🪟 桌面化 Web UI | 原生 Electron 窗口加载 DSH Web UI（`http://127.0.0.1:<端口>`），保留完整对话/工作流/工具能力 |
-| 🖥️ 托盘常驻 | 关闭窗口最小化到托盘；托盘菜单可显示/退出 |
-| ♻️ 内核自愈 | 内核子进程崩溃后自动重启（指数退避 1s/4s/16s，最多 3 次），窗口自动复用并刷新到新端口，不重复建窗 |
-| 🔒 Provider 管理 | DeepSeek 官方 / OpenAI-compatible / Ollama / LM Studio / llama.cpp / vLLM；API Key 经 `safeStorage` 密文落盘（磁盘无明文） |
-| 🔗 一键同步到 DSH | 保存 Provider 后自动写入 DSH `settings.yaml` 的 `llm-pi-ai.providers` 段（热重载，Web UI 模型选择器即刻可用），密钥经内核环境变量注入（`TT_DSH_KEY_<ROUTE>`） |
-| 🌗 主题联动 | 亮 / 暗 / 跟随系统三态，直接驱动 DSH 前端（写 `ui-theme.preference`，非 CSS 覆盖） |
-| 🚀 自包含内核 | 捆绑 Node 22.21.0 运行 dsh 内核（Electron 内置 Node 20.18 实测无法加载 dsh rc.6 的 web profile） |
-| 📦 一键打包 | electron-builder + NSIS 产出 Windows 安装包（约 145MB，含完整内核与依赖闭包） |
-| 🧪 可验证 | `node:test` 单测 16/16、内核生命周期 9/9、Provider/主题 14/14 全部实测通过 |
+一个 Windows 桌面应用：启动后弹出正常窗口（不是浏览器），窗口里是 **DeepSeek Harness** 的完整 AI 工作台（对话、工具调用、任务队列、工作流）。
+
+在 dsh 基础上，这个壳额外提供：
+
+- **系统托盘常驻**：关窗不退出，托盘右键可显示/退出；
+- **关闭行为可选**：关闭窗口时「最小化到托盘 / 直接退出 / 每次询问」三选一（见下文）；
+- **内核自愈**：内部 AI 内核意外崩溃自动重启（1s/4s/16s 退避，最多 3 次），窗口自动恢复；
+- **数据隔离**：应用数据全部在自己目录里，不触碰 dsh 命令行的数据；
+- **主题联动**：亮 / 暗 / 跟随系统，直接驱动界面。
 
 ---
 
-## 架构
+## 安装
+
+### 方式一：安装包安装（推荐）
+
+**1. 获取安装包**：
 
 ```text
-┌───────────────────────────────────────────────────────────────┐
-│ Electron 主进程（main，CommonJS，dist/main.js）                  │
-│  Window / Tray / IPC / Provider / 主题 / ServiceManager          │
-│  DSH_HOME = <userData>/dsh-home（与系统 ~/.dsh 完全隔离）          │
-├───────────────────────────────────────────────────────────────┤
-│ 内核子进程（spawn 捆绑 Node 22.21.0 node.exe）                    │
-│  运行 @deepseek-ai/dsh/lib/bin.js web --port <预占端口>           │
-│  = Cordis 运行时 + host-webserver + 全部 dsh 插件                 │
-├───────────────────────────────────────────────────────────────┤
-│ 渲染进程（BrowserWindow，Chromium）                              │
-│  加载 http://127.0.0.1:<实际端口>；preload 暴露 window.dshDesktop │
-└───────────────────────────────────────────────────────────────┘
+out\TT DeepSeek Harness Desktop Setup 0.1.0.exe   （约 145MB，位于项目 out 目录或发布附件）
 ```
 
-**关键设计**：
+**2. 双击安装**（向导式）：
 
-1. **内核 = 独立进程 + 捆绑 Node**：内核跑在随应用分发的 Node 22.21.0 上（dsh rc.6 需要 `node:zlib` zstd（22.13+）与 `node:module` 类型剥离（22.18+），Electron 内置 Node 20.18 无法启动）。
-2. **就绪信号 = 预占端口 + 健康轮询**：主进程先占一个空闲端口传给内核（等价 `--port 0`），再轮询 `GET /` 直至 200 才宣告就绪——打包后无控制台环境同样可靠。
-3. **内核日志落盘** `<userData>/logs/kernel.log`（stdout/stderr 重定向到文件，不依赖管道）。
-4. **数据隔离**：应用数据全部在 `%APPDATA%\tt-deepseek-harness-desktop`（Electron userData），**从不读写系统 `~/.dsh`**（那是 DeepSeek Harness CLI 的 home，互不干扰）。
+```text
+① 欢迎页 → 下一步
+② 选择安装目录 → 可点「浏览」自定义位置（默认安装到当前用户目录，无需管理员权限）
+③ 选择是否创建桌面快捷方式 → 下一步
+④ 安装 → 完成
+```
 
----
+**3. 启动**：双击桌面快捷方式，或从开始菜单打开「TT DeepSeek Harness Desktop」。
 
-## 环境要求
+**4. 卸载**：设置 → 应用 → 找到「TT DeepSeek Harness Desktop」→ 卸载（卸载后如需清除全部数据，见[数据与安全](#数据与安全)）。
 
-| 依赖 | 版本 | 说明 |
+> 提示：安装包目前**未签名**，Windows SmartScreen 可能提示“未知发布者”——点「更多信息 → 仍要运行」即可（仅首次）。
+
+### 方式二：从源码运行
+
+适合开发者/想改代码的人。需要先装好：
+
+| 软件 | 安装方式 | 用途 |
 |---|---|---|
-| Windows | 10/11 x64 | 主目标平台（NSIS 安装包） |
-| Node.js | ≥ 22.12（开发机） | 构建与测试用；**运行时内核用捆绑的 Node 22.21.0** |
-| pnpm | 9.x | `npm i -g pnpm@9` |
-| Git | ≥ 2.43 | 版本管理 |
+| VSCode | code.visualstudio.com 下载安装 | 看代码、一键运行 |
+| Node.js 22 LTS | nodejs.org 下载安装 | 构建引擎 |
+| pnpm 9 | 装完 Node 后 PowerShell 执行 `npm i -g pnpm@9` | 包管理 |
+| Git（可选） | git-scm.com | 版本存档 |
 
-macOS / Linux 构建配置已就绪（dmg / AppImage+deb），但仅 Windows 经过完整验证。
-
----
-
-## 快速开始
-
-```powershell
-# 1) 获取源码
-git clone <your-repo-url> tt-deepseek-harness-desktop
-cd tt-deepseek-harness-desktop
-
-# 2) 安装依赖（首次约 10-15 分钟，含 electron 二进制下载）
-pnpm install
-
-# 3) 构建
-pnpm build
-
-# 4) 开发启动（编译后启动 Electron，窗口加载 DSH Web UI）
-pnpm dev
-
-# 5) 运行单测
-pnpm test
-
-# 6) 打包 Windows 安装包
-pnpm dist
-# 产物：out\TT DeepSeek Harness Desktop Setup 0.1.0.exe
-```
-
-> 网络提示：大陆网络环境建议在安装/打包前设置镜像（本项目实测通过）：
->
-> ```powershell
-> $env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
-> $env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
-> ```
->
-> 若安装时 TLS 证书校验失败，Node 命令加 `--use-system-ca`。
-
-### 本地源码运行（推荐，双击即可，无黑色命令框）
-
-项目根目录提供两个启动器，**双击即可运行，无需打开终端**：
-
-| 启动器 | 说明 |
-|---|---|
-| **`start-desktop.vbs`**（推荐） | 无任何控制台窗口：首次自动 `pnpm build`，随后隐藏窗口启动应用，只显示 Electron 主窗口 |
-| `start-desktop.cmd` | 带日志控制台的启动方式：可见 build/主进程输出；**关闭此窗口 = 结束应用** |
+然后按下面任一种方式运行：
 
 ```text
-tt-deepseek-harness-desktop\
-├── start-desktop.vbs   ← 双击它（无黑框）
-└── start-desktop.cmd   ← 或双击它（带控制台日志）
+方式 ②-a：VSCode 按钮（推荐开发用）
+  1. VSCode 打开项目文件夹 D:\Workspace-1\tt-deepseek-harness-desktop
+  2. 按 Ctrl+Shift+B（自动编译并启动应用窗口）
+  3. 停止：点下方「终端」面板的垃圾桶按钮
+
+方式 ②-b：双击启动器（不想开 VSCode 时）
+  双击 start-desktop.vbs   （无黑色命令框）
+  或 双击 start-desktop.cmd（带日志控制台，关闭窗口=退出应用）
+
+方式 ②-c：终端命令
+  pnpm install   # 首次必做（装依赖，约 10-15 分钟）
+  pnpm dev       # 编译 + 启动
+  Ctrl+C 停止
 ```
 
-> 说明：Electron 主窗口的关闭按钮是**最小化到托盘**（应用常驻）；彻底退出请用**托盘图标 → 右键 → 退出**。
-> 内核子进程在启动时不会弹出黑色控制台（`windowsHide`），关闭黑框导致重启的现象已不存在。
 ---
 
-## 使用指南
+## 使用步骤（第一次打开后）
 
-### 启动与退出
+### 第 1 步：启动
 
-- 双击 `TT DeepSeek Harness Desktop.exe`（开发态 `pnpm dev`）启动；窗口自动加载 DSH Web UI，内核就绪后进入对话界面。
-- **关闭窗口 → 最小化到托盘**（进程常驻）。
-- **托盘图标 → 退出**：真正退出，内核及其工具子进程（bash/pwsh 等）被整树回收，无残留进程。
-- 单实例：重复启动会聚焦已有窗口。
+启动后窗口自动加载界面，等待几秒出现工作台（内部内核首次启动约 10-30 秒）。
 
-### 内核自愈
+### 第 2 步：配置 AI 服务（Provider）
 
-在任务管理器杀掉内核进程（`node.exe`，路径含 `resources\node`）后：
+要在窗口里对话，需要一个可用的模型服务。两种配置途径（任选）：
 
-1. 主进程检测到退出 → 按 1s / 4s / 16s 指数退避自动重启内核（最多 3 次）；
-2. 内核以**新端口**就绪后，主进程自动把现有窗口重载到新地址（不会弹第二个窗口）；
-3. 超过 3 次连续崩溃后触发 `exhausted`（预留弹窗提示重置 profile）。
+```text
+途径 A（推荐，有图形界面）：在窗口内的「模型设置」页配置
+  1. 打开窗口左下角/侧边栏的「设置 → Models」
+  2. 添加 Provider：
+     - DeepSeek 官方：填 API Key 即可（官方地址自动识别）
+     - 本地服务（Ollama / LM Studio / llama.cpp / vLLM）：填 baseURL
+       例：http://127.0.0.1:11434/v1（Ollama）
+  3. 保存后即可在对话输入框上方的模型选择器里选中模型
 
-### Provider 管理
+途径 B（程序化接口，密钥走系统加密）：
+  通过 window.dshDesktop.provider.save(...) 调用
+  （详见 scripts/verify-provider-theme.cjs 的完整示例）
+```
 
-当前版本提供程序化接口（图形设置页在路线图中）：
+> 说明：你的 API Key 属于你，程序不内置任何密钥。路径 A 的密钥由 dsh 存管；路径 B 的密钥经 Windows 系统加密（safeStorage）落盘，磁盘上只有密文。
 
-| 方法（`window.dshDesktop.provider.*`） | 说明 |
+### 第 3 步：开始对话
+
+在输入框输入内容回车即可。支持的任务类型取决于 dsh 内核能力（对话、写代码、跑命令、子代理等）。
+
+### 第 4 步：日常开关
+
+- **关闭窗口**：行为由你的设置决定（见下一节）；
+- **找回窗口**：双击托盘图标，或托盘右键 → 显示主窗口；
+- **彻底退出**：托盘右键 → 退出；
+- **内核坏了**：不用管，会自动重启并恢复（最多自动尝试 3 次）。
+
+---
+
+## 关闭窗口行为（托盘 or 退出）
+
+点窗口右上角关闭按钮时，可选三种行为（默认：**每次询问**）：
+
+| 行为 | 效果 |
 |---|---|
-| `list()` | 列出全部 Provider（Key 不回显，仅 `hasKey`） |
-| `save(cfg)` | 新增/更新（Key 走 safeStorage 加密；自动同步 DSH settings.yaml；Key 变更自动重启内核） |
-| `remove(id)` | 删除（含密文与 DSH 配置段） |
-| `test(id)` | 连通性测试（请求 `/models`） |
-| `listModels(id)` | 拉取模型列表 |
-| `probeLocal()` | 扫描本机 Ollama/LM Studio/llama.cpp/vLLM/LocalAI 预设端点 |
+| 每次询问 | 弹窗问「最小化到托盘 / 退出」，可勾选“记住我的选择，下次不再询问” |
+| 最小化到托盘 | 窗口隐藏、程序继续在托盘运行 |
+| 直接退出 | 立即退出整个应用（含内核） |
 
-完整闭环可运行 `node scripts/verify-provider-theme.cjs` 查看（新增→加密落盘→同步 DSH→凭据注入→删除）。
+**在哪里改**：托盘图标 → 右键 → 「关闭窗口行为」子菜单 → 单选切换（改完立即生效）。
 
-### 主题
+设置保存在：`%APPDATA%\tt-deepseek-harness-desktop\config\app-settings.json`（删掉该文件即恢复默认）。
 
-调用 `window.dshDesktop.theme.set(...)`（`dark` / `light` / `system`）：
+---
 
-- 写入 `$DSH_HOME/settings.yaml` 的 `ui-theme.preference`（DSH 原生主题机制，热重载）；
-- 页面 `body[data-ds-dark-theme]` 与 `--dsw-alias-*` 变量联动，亮暗切换即时生效；
-- 会话持久化在 `$DSH_HOME/sessions`，切换主题（重载）不丢对话。
+## 主题
+
+- 界面跟随系统亮暗，也可固定亮/暗：在托盘菜单或界面设置里切换；
+- 主题设置写入 dsh 的 `settings.yaml`（`ui-theme.preference`），切换即时生效，不丢失当前会话。
 
 ---
 
 ## 数据与安全
 
-### 数据位置
+### 数据都在哪
 
 | 内容 | 位置 |
 |---|---|
-| Provider 配置（不含 Key） | `%APPDATA%\tt-deepseek-harness-desktop\config\providers.json` |
-| API Key 密文（safeStorage 加密） | `%APPDATA%\tt-deepseek-harness-desktop\secrets\<id>.enc` |
-| 内核日志 | `%APPDATA%\tt-deepseek-harness-desktop\logs\kernel.log` |
-| 隔离的 DSH home（profile/会话/settings.yaml） | `%APPDATA%\tt-deepseek-harness-desktop\dsh-home` |
-| 打包产物 | `out/`（项目内） |
+| 应用设置（关闭行为等） | `%APPDATA%\tt-deepseek-harness-desktop\config\app-settings.json` |
+| Provider 配置（不含密钥） | `%APPDATA%\tt-deepseek-harness-desktop\config\providers.json` |
+| 加密的 API Key（safeStorage） | `%APPDATA%\tt-deepseek-harness-desktop\secrets\*.enc` |
+| 内核日志（排错入口） | `%APPDATA%\tt-deepseek-harness-desktop\logs\kernel.log` |
+| dsh 数据（会话/设置/模型配置） | `%APPDATA%\tt-deepseek-harness-desktop\dsh-home` |
 
-### 安全边界
+### 安全说明
 
-- **系统 `~/.dsh` 零接触**：应用与内核通过 `DSH_HOME` 环境变量强制隔离到 userData 下，与 DeepSeek Harness CLI 的数据完全互不干扰；
-- **密钥无明文**：API Key 仅在内存中解密，落盘为 `safeStorage.encryptString` 产物；`providers.json` 只存元数据；
-- **凭据闭环**：Key 经内核环境变量 `TT_DSH_KEY_<ROUTE>` 注入（内核启动时收集），DSH 的 `llm-pi-ai.providers.<route>.apiKeyEnv` 按请求解析，不写进任何配置文件；
-- **日志脱敏**：内核输出经 `redact` 处理（Bearer / `sk-` / `api_key=` 自动遮蔽）后才落盘；
-- **进程边界**：关闭窗口不退出（托盘），显式退出时 `taskkill /T` 整树回收 + `child.kill()` 兜底，杜绝孤儿进程。
+- **不碰系统 `~/.dsh`**：与 DeepSeek Harness 命令行的数据完全隔离；
+- **密钥无明文**：API Key 落盘前经 Windows 系统加密（safeStorage）；日志自动脱敏（Bearer/`sk-` 等遮蔽）；
+- **进程干净**：退出时内核及其工具子进程整树回收，无残留。
 
-### 彻底卸载
+### 彻底卸载数据
 
 ```powershell
-# 卸载应用后，如需清除全部数据
 Remove-Item -Recurse -Force "$env:APPDATA\tt-deepseek-harness-desktop"
-# （可选）清理构建缓存
-pnpm store prune
-Remove-Item -Recurse -Force "$env:LOCALAPPDATA\electron", "$env:LOCALAPPDATA\electron-builder"
-```
-
----
-
-## Provider 与密钥
-
-### 支持类型
-
-- **DeepSeek 官方**：OpenAI 协议，任意 OpenAI-compatible 端点均可；
-- **本地端点预设**（`src/provider/presets.ts`，可用 `probeLocal()` 自动发现）：
-  - Ollama `http://127.0.0.1:11434/v1`
-  - LM Studio `http://127.0.0.1:1234/v1`
-  - llama.cpp server / LocalAI `http://127.0.0.1:8080/v1`
-  - vLLM `http://127.0.0.1:8000/v1`
-- 自定义 baseURL + 可选 `extraHeaders`。
-
-### 同步到 DSH（providerSync: direct）
-
-保存 Provider 后自动写入 `settings.yaml`：
-
-```yaml
-llm-pi-ai:
-  providers:
-    my-ollama:
-      displayName: Ollama
-      api: openai-completions
-      baseURL: http://127.0.0.1:11434/v1
-      apiKeyEnv: TT_DSH_KEY_MY_OLLAMA   # 密钥由内核环境注入，不在文件中
-      models:
-        - id: llama3.2
-          name: llama3.2
-```
-
-`dsh-settings-file` 热重载该文件，DSH Web UI 的模型选择器即时出现该 Provider 的模型。
-
----
-
-## 打包与发布
-
-### 本地打包
-
-```powershell
-pnpm dist
-# out\TT DeepSeek Harness Desktop Setup 0.1.0.exe（NSIS，约 145MB）
-```
-
-要点：
-
-- `asar: false`——内核（纯 Node 子进程）需要直接读取 `node_modules`，且捆绑 Node 随 `extraResources` 分发；
-- `win.signAndEditExecutable: false`——本机无符号链接特权时的实测绕行方案；产物为未签名 exe（Windows SmartScreen 可能提示，选择"仍要运行"即可；正式发布建议配置代码签名证书后移除该选项）；
-- 首次打包会自动补齐 pnpm peer 依赖（`scripts/add-missing-peers.cjs`——electron-builder 不收集 peer 依赖，实测缺 100+ 包）；
-- 图标由 `scripts/make-icon.cjs` 生成占位图（256×256），正式发布前请替换 `resources/icon.ico`。
-
-### CI 三平台构建
-
-`.github/workflows/ci.yml` 已就绪：install（frozen-lockfile）→ build → test → dist → 上传产物（windows/macos/linux 矩阵）。
-
----
-
-## 测试与验证
-
-| 套件 | 命令 | 覆盖 | 实测结果 |
-|---|---|---|---|
-| 单元测试 | `pnpm test` | 状态机全转移表、OpenAI 适配器（SSE/超时/mock fetch）、本地探测、主题 token 校验、日志脱敏 | **16/16 通过** |
-| 内核生命周期 | `node scripts/verify-kernel-lifecycle.cjs` | 启动→就绪→GET 200→防双开→杀内核自动重启（新进程新端口）→停止无残留 | **9/9 通过** |
-| Provider/主题 | `node scripts/verify-provider-theme.cjs` | 密文落盘、DSH 同步格式、凭据注入、主题 settings 读写、多段共存 | **14/14 通过** |
-
-验证脚本不依赖 Electron GUI（mock 主进程 API），可在 CI / 无头环境运行。
-
----
-
-## 项目结构
-
-```text
-tt-deepseek-harness-desktop/
-├── src/
-│   ├── main.ts                 # 入口：单实例锁、DSH_HOME 隔离、窗口/内核装配
-│   ├── window.ts               # 窗口（sandbox preload、关闭→托盘、重启复用）
-│   ├── tray.ts                 # 托盘菜单
-│   ├── preload.ts              # contextBridge（CJS 自包含）
-│   ├── state.ts                # 退出标志
-│   ├── service/
-│   │   ├── ServiceManager.ts   # 内核子进程：spawn/就绪/自愈/树杀
-│   │   ├── health.ts           # GET / 健康检查
-│   │   ├── state-machine.ts    # 纯函数状态机
-│   │   └── contract.json       # Stage 1 实测契约
-│   ├── ipc/                    # IPC 通道与全量 handler
-│   ├── provider/               # types/adapters/presets/probe/store/dshSync
-│   ├── security/secrets.ts     # safeStorage 封装
-│   └── theme/                  # themeManager（settings.yaml 驱动）/tokens
-├── tests/                      # node:test 单测（5 文件）
-├── scripts/
-│   ├── verify-kernel-lifecycle.cjs   # 生命周期验证 9/9
-│   ├── verify-provider-theme.cjs     # Provider/主题验证 14/14
-│   ├── make-icon.cjs                 # 生成 256×256 ICO
-│   └── add-missing-peers.cjs         # 打包依赖补齐
-├── resources/
-│   ├── node/node.exe           # 捆绑 Node 22.21.0（36MB）
-│   ├── icon.ico                # 应用图标
-│   └── build/electron-builder.yml
-├── .github/workflows/ci.yml    # 三平台 CI
-└── package.json
 ```
 
 ---
 
 ## 常见问题（FAQ）
 
-### 内核起不来 / 窗口无内容
-
-- 查看 `%APPDATA%\tt-deepseek-harness-desktop\logs\kernel.log`；
-- 常见原因：捆绑 Node 版本低于 22.18（缺 zstd / 类型剥离 API）——本项目锁定 22.21.0，勿随意替换 `resources/node/node.exe`；
-- 内核反复崩溃 3 次后进入 `exhausted`，重启应用即可。
-
-### 安装包 SmartScreen 提示
-
-未签名所致（`signAndEditExecutable: false`）。开发/自用选"更多信息 → 仍要运行"；正式发布请配置代码签名。
-
-### 想用系统 `~/.dsh` 的既有 profile？
-
-当前设计刻意隔离（防止污染 DeepSeek Harness CLI 数据）。如需打通，可设置环境变量 `DSH_HOME` 指向系统 home 后启动（应用尊重显式设置），风险自负。
-
-### 内存占用偏高？
-
-Electron + Chromium + 内核（V8+Cordis）稳定态约 330–600MB、任务密集时可超 1GB，属方案固有代价（见架构）。窗口隐藏时 `backgroundThrottling` 会降低渲染进程占用。
-
-### 打包体积为什么这么大？
-
-完整携带 dsh 依赖闭包（900+ 包）与捆绑 Node；体积换零联网安装与离线可用。
+| 问题 | 解答 |
+|---|---|
+| 窗口空白 / 内核起不来 | 查看 `%APPDATA%\tt-deepseek-harness-desktop\logs\kernel.log` 最后几行；重启应用 |
+| 安装包提示未知发布者 | 未签名所致，点「更多信息 → 仍要运行」；正式发布建议配置代码签名 |
+| 关闭窗口后程序不见了 | 它在托盘（右下角小箭头里）；双击托盘图标可唤回 |
+| 想彻底退出却退不掉 | 托盘右键 → 退出（或在「关闭窗口行为」里选「直接退出」） |
+| 内存占用偏高 | Electron+内核方案固有代价（稳定态约 330-600MB）；属正常 |
+| 改了代码没生效 | 先编译：Ctrl+Shift+B 或 `pnpm build` |
+| 对话提示没有模型 | 回到「使用步骤 → 第 2 步」配置 Provider |
 
 ---
 
-## 路线图
+## 开发相关
 
-- [x] v0.1 基础：窗口/托盘/内核自愈/Provider 加密存储/DSH 同步/主题/NSIS 打包
-- [ ] 图形化 Provider 设置页（当前为 IPC + 脚本接口）
-- [ ] 自定义主题导入（`--tt-*` token 体系已预留）
-- [ ] 自动更新（electron-updater 已规划）
-- [ ] macOS / Linux 完整验证
-- [ ] 轻量版：迁移 Tauri（桥接层 `window.dshDesktop` 契约已抽象，内核不变）
+```powershell
+pnpm install       # 装依赖
+pnpm build         # 编译（tsc）
+pnpm dev           # 编译+启动
+pnpm test          # 单测（16 用例）
+pnpm dist          # 打包安装包（out\）
+node scripts/verify-kernel-lifecycle.cjs   # 内核生命周期自检 9 项
+node scripts/verify-provider-theme.cjs     # Provider/主题自检 17 项
+```
+
+- 技术栈：Electron 33 + TypeScript 5.9 + 捆绑 Node 22.21.0（内核运行时）+ pnpm 9 + node:test + electron-builder 25；
+- 内核 = `@deepseek-ai/dsh` 全家桶（195 个包），以子进程方式运行，**未修改其任何源码**；
+- 项目结构、架构图、新手手搓指南见方案文档 `tt-deepseek-harness-desktop-spec-v5.3.md`。
 
 ---
 
 ## 声明
 
 - 本项目与 DeepSeek 官方无隶属关系，不包含官方代码或密钥；
-- 底层能力与数据模型归属 DeepSeek Harness 项目（MIT），本项目仅为桌面壳层；
+- 底层能力归属 DeepSeek Harness 项目（MIT）；
 - 使用时请遵守 DeepSeek 服务条款与你所配置模型提供方的使用政策。
 
 ---
