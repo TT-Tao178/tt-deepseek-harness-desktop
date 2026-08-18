@@ -69,7 +69,16 @@ const check = (name, ok, detail = '') => { results.push({ name, ok }); console.l
   const s3 = readSettings();
   check('settings.yaml keeps both sections', s3['ui-theme']?.preference === 'light' && !!s3['llm-pi-ai']);
 
-  const failed = results.filter(r => !r.ok);
+  
+// --- 关闭行为设置（需求 2） ---
+const { readAppSettings, setCloseBehavior } = require('../dist/settings');
+check('settings default closeBehavior=ask', readAppSettings().closeBehavior === 'ask');
+setCloseBehavior('quit');
+check('setCloseBehavior(quit) persists', readAppSettings().closeBehavior === 'quit');
+setCloseBehavior('tray');
+check('setCloseBehavior(tray) roundtrip', readAppSettings().closeBehavior === 'tray');
+
+const failed = results.filter(r => !r.ok);
   console.log(`\n== ${results.length - failed.length}/${results.length} checks passed ==`);
   process.exit(failed.length ? 1 : 0);
 })().catch((e) => { console.error('SCRIPT ERROR', e); process.exit(2); });
