@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "com.tt.pet-default",
+  "name": "默认小蓝",
+  "version": "1.0.0",
+  "author": "TT Desktop",
+  "renderer": "css",
+  "size": { "width": 120, "height": 130 },
+  "animations": {
+    "idle": "animations/idle",
+    "click": "animations/click",
+    "working": "animations/working"
+  },
+  "behaviors": { "idleSleepMs": 120000, "wanderIntervalMs": 8000, "followCursor": true }
+}

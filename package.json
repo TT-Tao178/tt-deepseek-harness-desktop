@@ -10,16 +10,15 @@
   },
   "packageManager": "pnpm@9.0.0",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-pet-ui.cjs",
     "dev": "pnpm build && electron .",
     "start": "electron .",
     "test": "node --test --experimental-test-isolation=none \"tests/*.test.cjs\"",
     "dist": "electron-builder --config resources/build/electron-builder.yml"
   },
   "dependencies": {
-    "@deepseek-ai/dsh": "0.1.0-rc.6",
-    "js-yaml": "^4.2.0",
     "@deepseek-ai/cordis-plugin-group": "1.0.1",
+    "@deepseek-ai/dsh": "0.1.0-rc.6",
     "@deepseek-ai/dsh-anonymous-user-id": "0.1.0-rc.6",
     "@deepseek-ai/dsh-atomic-write": "0.1.0-rc.6",
     "@deepseek-ai/dsh-bash-local": "0.1.0-rc.6",
@@ -37,13 +36,18 @@
     "@deepseek-ai/dsh-subagent-in-process-driver": "0.1.0-rc.6",
     "@deepseek-ai/dsh-subprocess": "0.1.0-rc.6",
     "@deepseek-ai/dsh-timeout": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-workflow": "0.1.0-rc.6"
+    "@deepseek-ai/dsh-workflow": "0.1.0-rc.6",
+    "js-yaml": "^4.2.0",
+    "lottie-web": "^5.13.0",
+    "semver": "^7.8.5",
+    "tar": "^7.5.22"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.0.0",
+    "@types/semver": "^7.8.0",
     "electron": "^33.2.0",
     "electron-builder": "^25.0.0",
-    "typescript": "^5.7.0",
-    "@types/node": "^22.0.0",
-    "@types/js-yaml": "^4.0.9"
+    "typescript": "^5.7.0"
   }
 }
