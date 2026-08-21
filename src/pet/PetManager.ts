@@ -12,6 +12,7 @@ function plog(msg: string) {
 export class PetManager {
   private win: BrowserWindow | null = null;
   private mainWin: BrowserWindow | null = null;
+  private ipcRegistered = false;
   absorbed = false;
 
   create(anchor?: { x: number; y: number; width: number; height: number }): void {
@@ -74,6 +75,8 @@ export class PetManager {
   }
 
   private registerIpc(): void {
+    if (this.ipcRegistered) return;   // 防重复注册（桌宠开关重建窗口时）
+    this.ipcRegistered = true;
     ipcMain.handle('pet:move', (_e, x: number, y: number) => {
       this.win?.setPosition(Math.round(x), Math.round(y));
     });
@@ -107,6 +110,17 @@ export class PetManager {
   }
   attachMainWindow(win: BrowserWindow): void { this.mainWin = win; }
   setAlwaysOnTop(v: boolean): void { this.win?.setAlwaysOnTop(v, 'floating'); }
+  /** 桌宠开关：关 = 销毁窗口并释放被收起的主窗口；开 = 重建。 */
+  setEnabled(on: boolean): void {
+    if (on) {
+      if (!this.win || this.win.isDestroyed()) this.create(this.mainWin?.getBounds());
+      else this.win.show();
+      return;
+    }
+    // 关闭桌宠时若主窗口被收进桌宠 → 先释放，避免主窗口永远隐藏
+    if (this.absorbed && this.mainWin) this.release(this.mainWin);
+    if (this.win && !this.win.isDestroyed()) { this.win.destroy(); this.win = null; }
+  }
   setIgnoreMouseEvents(ignore: boolean): void {
     this.win?.setIgnoreMouseEvents(ignore, ignore ? { forward: true } : undefined);
     if (ignore) this.win?.setAlwaysOnTop(false);

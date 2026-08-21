@@ -15,7 +15,7 @@ Module._load = function (request, parent, isMain) {
 const { petTransition } = require('../dist/pet/state-machine');
 const { validatePetTheme, animationFor } = require('../dist/pet/theme-validate');
 const { AgentEventBridge } = require('../dist/pet/AgentEventBridge');
-const { readAppSettings, updateAppSettings, updatePetPos, setCloseBehavior } = require('../dist/settings');
+const { readAppSettings, updateAppSettings, updatePetPos, setCloseBehavior, setPetEnabled } = require('../dist/settings');
 
 const results = [];
 const check = (name, ok, detail = '') => { results.push({ name, ok }); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name} ${detail}`); };
@@ -28,6 +28,15 @@ check('updatePetPos keeps closeBehavior', readAppSettings().closeBehavior === 't
 check('updatePetPos persists pos', readAppSettings().pet?.pos?.x === 123 && readAppSettings().pet?.pos?.y === 456);
 updateAppSettings({ kernel: { channel: 'off' } });
 check('updateAppSettings merges kernel without losing pet', readAppSettings().kernel?.channel === 'off' && readAppSettings().pet?.pos?.x === 123);
+
+// pet.enabled（用户需求：设置中开关桌宠）
+check('pet.enabled defaults to true', (readAppSettings().pet?.enabled ?? true) === true);
+setPetEnabled(false);
+check('setPetEnabled(false) persists', readAppSettings().pet?.enabled === false);
+setPetEnabled(true);
+check('setPetEnabled(true) roundtrip', readAppSettings().pet?.enabled === true);
+updatePetPos(9, 9);
+check('updatePetPos keeps enabled', readAppSettings().pet?.enabled === true);
 
 // theme validate（v6.1 §2.7）
 const root = path.resolve('resources/pet/themes/default');

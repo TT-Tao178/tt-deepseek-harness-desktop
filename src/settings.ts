@@ -9,7 +9,7 @@ const settingsPath = () => path.join(app.getPath('userData'), 'config', 'app-set
 
 export interface AppSettings {
   closeBehavior: CloseBehavior;
-  pet?: { pos?: { x: number; y: number }; theme?: string; alwaysOnTop?: boolean };
+  pet?: { enabled?: boolean; pos?: { x: number; y: number }; theme?: string; alwaysOnTop?: boolean };
   kernel?: { channel?: string; mirror?: string };
 }
 
@@ -20,7 +20,9 @@ export function readAppSettings(): AppSettings {
     if (!existsSync(settingsPath())) return { ...DEFAULTS };
     const j = JSON.parse(readFileSync(settingsPath(), 'utf8'));
     const b = j?.closeBehavior;
-    return { ...DEFAULTS, ...j, closeBehavior: VALID.includes(b) ? b : DEFAULTS.closeBehavior };
+    // pet.enabled 默认 true（归一化，防止旧配置缺字段）
+    const pet = { enabled: true, ...(j?.pet ?? {}) };
+    return { ...DEFAULTS, ...j, closeBehavior: VALID.includes(b) ? b : DEFAULTS.closeBehavior, pet };
   } catch {
     return { ...DEFAULTS };
   }
@@ -45,5 +47,10 @@ export function updateAppSettings(patch: Partial<AppSettings>): AppSettings {
 /** v6.1 §6：桌宠位置合并写（嵌套对象显式展开，防覆盖 closeBehavior）。 */
 export function updatePetPos(x: number, y: number): void {
   const s = readAppSettings();
-  writeAppSettings({ ...s, pet: { ...(s.pet ?? {}), pos: { x, y } } });
+  writeAppSettings({ ...s, pet: { ...(s.pet ?? {}), enabled: s.pet?.enabled ?? true, pos: { x, y } } });
+}
+
+export function setPetEnabled(v: boolean): void {
+  const s = readAppSettings();
+  writeAppSettings({ ...s, pet: { ...(s.pet ?? {}), enabled: v } });
 }

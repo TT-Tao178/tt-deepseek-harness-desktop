@@ -6,6 +6,7 @@ import { createWindow } from './window';
 import { createTray } from './tray';
 import { registerIpc } from './ipc';
 import { appState } from './state';
+import { readAppSettings } from './settings';
 import { PetManager } from './pet/PetManager';
 import { AgentEventBridge } from './pet/AgentEventBridge';
 import { KernelLogTailSource } from './pet/KernelLogTailSource';
@@ -51,7 +52,9 @@ if (!gotLock) {
 
     kernelUpdater.init();
     kernelUpdater.onNotify = (msg) => console.log('[kernel-update]', msg);
-    try { pet.create(); } catch (e) { logError('pet.create', e); }
+    if (readAppSettings().pet?.enabled ?? true) {
+      try { pet.create(); } catch (e) { logError('pet.create', e); }
+    }
     registerPetMenuIpc(pet, () => win);
 
     // v6.1 §2.5 快捷键（必须 app ready 后注册）
@@ -91,7 +94,10 @@ if (!gotLock) {
     } catch (e) { logError('task-events', e); }
 
     await service.start();
-    createTray({ absorb: () => { if (win) pet.absorb(win); } });
+    createTray({
+      absorb: () => { if (win) pet.absorb(win); },
+      onTogglePet: (enabled) => { try { pet.setEnabled(enabled); } catch (e) { logError('pet.setEnabled', e); } },
+    });
     registerIpc(service);
   });
 
