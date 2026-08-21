@@ -10,6 +10,8 @@ files:
 extraResources:
   - from: resources/node
     to: node
+  - from: resources/pet/themes/default
+    to: pet/themes/default
 win:
   target: [nsis]
   signAndEditExecutable: false

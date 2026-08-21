@@ -1,0 +1,44 @@
+/* v6.1 内置 css 渲染器（兜底/默认主题外观） */
+* { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+#stage { width: 100%; height: 100%; position: relative; display: flex; align-items: flex-end; justify-content: center; }
+
+.pet { width: 120px; height: 130px; position: relative; transform-origin: 50% 100%; cursor: grab; }
+.pet:active { cursor: grabbing; }
+.body { width: 100px; height: 110px; background: #4d7cfe; border-radius: 50% 50% 45% 45%; position: absolute; bottom: 10px; left: 10px;
+  box-shadow: inset -8px -10px 0 rgba(0,0,0,.12); }
+.eye { width: 16px; height: 20px; background: #fff; border-radius: 50%; position: absolute; top: 38px; overflow: hidden; }
+.eye::after { content: ""; position: absolute; width: 8px; height: 10px; background: #1a1d21; border-radius: 50%;
+  left: 50%; top: 50%; transform: translate(calc(-50% + var(--look-x, 0px)), calc(-50% + var(--look-y, 0px))); }
+.eye-l { left: 28px; } .eye-r { right: 28px; }
+.mouth { width: 14px; height: 8px; border-bottom: 3px solid #1a1d21; border-radius: 0 0 12px 12px; position: absolute; top: 68px; left: 43px; }
+
+/* 状态动画 */
+.pet-idle .body { animation: breathe 2.4s ease-in-out infinite; }
+.pet-click .body { animation: bounce .5s ease; }
+.pet-dragging .body { animation: none; transform: scale(1.05); }
+.pet-sleep .body { animation: breathe 3.6s ease-in-out infinite; filter: saturate(.6); }
+.pet-wake .body { animation: bounce .4s ease; }
+.pet-working .body { animation: typeShake .18s ease-in-out infinite; }
+.pet-working .mouth { border-bottom-color: transparent; border-top: 3px solid #1a1d21; border-radius: 10px 10px 0 0; }
+.pet-happy .body { animation: happySpin .6s ease; }
+.pet-sad .body { animation: sadDrop .5s ease forwards; }
+.pet-absorb .body { animation: absorbIn .35s ease forwards; }
+.pet-release .body { animation: releaseOut .35s ease; }
+.pet-wander .body { animation: breathe 1.8s ease-in-out infinite; }
+
+@keyframes breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.03, .97); } }
+@keyframes bounce { 0% { transform: translateY(0); } 40% { transform: translateY(-14px); } 100% { transform: translateY(0); } }
+@keyframes typeShake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-1px) rotate(-.6deg); } 75% { transform: translateX(1px) rotate(.6deg); } }
+@keyframes happySpin { 0% { transform: rotate(0) scale(1); } 50% { transform: rotate(-8deg) scale(1.12); } 100% { transform: rotate(0) scale(1); } }
+@keyframes sadDrop { 0% { transform: scale(1); } 100% { transform: scale(.92, .9) translateY(4px); } }
+@keyframes absorbIn { 0% { transform: scale(1); opacity: 1; } 100% { transform: scale(.2); opacity: 0; } }
+@keyframes releaseOut { 0% { transform: scale(.2); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+
+/* 气泡 */
+.bubble { position: absolute; top: -46px; left: 50%; transform: translateX(-50%); background: #fff; color: #1a1d21;
+  padding: 8px 12px; border-radius: 12px; font: 13px/1.4 "Microsoft YaHei", sans-serif; white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0,0,0,.18); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.bubble::after { content: ""; position: absolute; bottom: -6px; left: 50%; transform: translateX(-50%);
+  border: 6px solid transparent; border-top-color: #fff; }
+.bubble.hidden { display: none; }

@@ -7,7 +7,11 @@ const VALID: CloseBehavior[] = ['ask', 'tray', 'quit'];
 
 const settingsPath = () => path.join(app.getPath('userData'), 'config', 'app-settings.json');
 
-export interface AppSettings { closeBehavior: CloseBehavior; }
+export interface AppSettings {
+  closeBehavior: CloseBehavior;
+  pet?: { pos?: { x: number; y: number }; theme?: string; alwaysOnTop?: boolean };
+  kernel?: { channel?: string; mirror?: string };
+}
 
 const DEFAULTS: AppSettings = { closeBehavior: 'ask' };
 
@@ -16,7 +20,7 @@ export function readAppSettings(): AppSettings {
     if (!existsSync(settingsPath())) return { ...DEFAULTS };
     const j = JSON.parse(readFileSync(settingsPath(), 'utf8'));
     const b = j?.closeBehavior;
-    return { closeBehavior: VALID.includes(b) ? b : DEFAULTS.closeBehavior };
+    return { ...DEFAULTS, ...j, closeBehavior: VALID.includes(b) ? b : DEFAULTS.closeBehavior };
   } catch {
     return { ...DEFAULTS };
   }
@@ -29,4 +33,17 @@ export function writeAppSettings(s: AppSettings): void {
 
 export function setCloseBehavior(b: CloseBehavior): void {
   writeAppSettings({ ...readAppSettings(), closeBehavior: b });
+}
+
+/** v6.1 §6：浅合并写（不覆盖其他字段）。 */
+export function updateAppSettings(patch: Partial<AppSettings>): AppSettings {
+  const next = { ...readAppSettings(), ...patch };
+  writeAppSettings(next);
+  return next;
+}
+
+/** v6.1 §6：桌宠位置合并写（嵌套对象显式展开，防覆盖 closeBehavior）。 */
+export function updatePetPos(x: number, y: number): void {
+  const s = readAppSettings();
+  writeAppSettings({ ...s, pet: { ...(s.pet ?? {}), pos: { x, y } } });
 }
