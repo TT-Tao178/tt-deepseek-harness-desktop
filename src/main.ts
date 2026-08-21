@@ -78,7 +78,9 @@ if (!gotLock) {
 
     // v6.1 §2.6 任务联动（规则由 V6-S4 探针固化；异常降级不崩）
     try {
-      const rulesPath = path.join(path.dirname(__dirname), 'resources', 'task-events.json');
+      const rulesPath = app.isPackaged
+        ? path.join(process.resourcesPath, 'task-events.json')
+        : path.join(path.dirname(__dirname), 'resources', 'task-events.json');
       const rules = JSON.parse(require('node:fs').readFileSync(rulesPath, 'utf8')).map((r: any) => ({ re: new RegExp(r.re), ev: r.ev }));
       eventBridge.attach(new KernelLogTailSource(path.join(app.getPath('userData'), 'logs', 'kernel.log'), rules));
       void eventBridge.start();
