@@ -1,6 +1,12 @@
-import { BrowserWindow, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, screen } from 'electron';
 import path from 'node:path';
 import { readAppSettings, updatePetPos } from '../settings';
+import { appendFileSync, mkdirSync } from 'node:fs';
+
+const petLog = () => path.join(app.getPath('userData'), 'logs', 'pet.log');
+function plog(msg: string) {
+  try { mkdirSync(path.dirname(petLog()), { recursive: true }); appendFileSync(petLog(), `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+}
 
 /** v6.1 §2.8 桌宠窗口管理器（主进程）。 */
 export class PetManager {
@@ -8,19 +14,56 @@ export class PetManager {
   private mainWin: BrowserWindow | null = null;
   absorbed = false;
 
-  create(): void {
-    if (this.win && !this.win.isDestroyed()) { this.win.show(); return; }
-    const pos = readAppSettings().pet?.pos;
+  create(anchor?: { x: number; y: number; width: number; height: number }): void {
+    const saved = readAppSettings().pet?.pos;
+    // 已有窗口：若用户未自定义过位置且给了锚点（主窗口），跟随锚点重定位到主窗口左侧
+    if (this.win && !this.win.isDestroyed()) {
+      this.win.show();
+      if (!saved && anchor) {
+        const wa = screen.getPrimaryDisplay().workArea;
+        const px = Math.max(wa.x, anchor.x - 340);
+        const py = Math.min(Math.max(anchor.y + anchor.height - 390, wa.y), wa.y + wa.height - 360);
+        this.win.setPosition(px, py);
+      }
+      return;
+    }
+    // 默认位置：锚定主窗口左侧（左侧空间必然可见且不遮挡主窗口；规避虚拟屏幕配置差异）
+    let pos = saved;
+    if (!pos) {
+      const wa = screen.getPrimaryDisplay().workArea;
+      const base = anchor ?? { x: wa.x + wa.width, y: wa.y, width: 0, height: 0 };
+      pos = { x: Math.max(wa.x, base.x - 340), y: Math.min(Math.max(base.y + base.height - 390, wa.y), wa.y + wa.height - 360) };
+      if (!anchor) pos = { x: wa.x + wa.width - 340, y: wa.y + wa.height - 390 };
+    }
+    // 越界校验：拉回主屏可见区
+    try {
+      const wa = screen.getPrimaryDisplay().workArea;
+      pos = {
+        x: Math.min(Math.max(pos.x, wa.x), wa.x + wa.width - 320),
+        y: Math.min(Math.max(pos.y, wa.y), wa.y + wa.height - 360),
+      };
+    } catch { /* 保持原值 */ }
     this.win = new BrowserWindow({
       width: 320, height: 360,
       ...(pos ?? {}),
       transparent: true, frame: false, resizable: false, hasShadow: false,
       skipTaskbar: true, show: false, alwaysOnTop: true, minimizable: false, fullscreenable: false,
-      webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, 'pet-preload.js') },
+      webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(__dirname, '..', 'pet-preload.js') },
     });
     this.win.setAlwaysOnTop(true, 'floating');
-    void this.win.loadFile(path.join(__dirname, 'pet', 'index.html'));
-    this.win.once('ready-to-show', () => this.win?.show());
+    void this.win.loadFile(path.join(__dirname, 'index.html'));
+    plog('create: pos=' + JSON.stringify(pos) + ' displays=' + JSON.stringify(screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds, workArea: d.workArea, scale: d.scaleFactor }))));
+    this.win.once('ready-to-show', () => {
+      plog('ready-to-show');
+      this.win?.show();
+      // 诊断（排错用，保留轻量日志）
+      setTimeout(() => {
+        const w = this.win;
+        plog('post-show: visible=' + w?.isVisible() + ' bounds=' + JSON.stringify(w?.getBounds()) + ' alwaysOnTop=' + w?.isAlwaysOnTop());
+      }, 3000);
+    });
+    this.win.webContents.on('did-fail-load', (_e, code, desc, url, isMain) => { plog('did-fail-load: ' + code + ' ' + desc + ' url=' + url + ' main=' + isMain); });
+    this.win.webContents.on('did-finish-load', () => plog('did-finish-load'));
     this.win.on('moved', () => {
       if (!this.win) return;
       const [x, y] = this.win.getPosition();
@@ -37,6 +80,10 @@ export class PetManager {
     ipcMain.handle('pet:getBounds', () => this.win?.getBounds() ?? null);
     ipcMain.handle('pet:toggle', () => {
       if (this.mainWin) { if (this.absorbed) this.release(this.mainWin); else this.absorb(this.mainWin); }
+    });
+    ipcMain.handle('pet:setClickThrough', (_e, v: boolean) => {
+      // 透明区域可点击穿透；角色区域内由渲染层再切回
+      this.win?.setIgnoreMouseEvents(v, v ? { forward: true } : undefined);
     });
     ipcMain.handle('pet:screen', () => {
       const b = this.win?.getBounds();
