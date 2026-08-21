@@ -1,7 +1,7 @@
 import { app, BrowserWindow, Menu, MenuItemConstructorOptions, Tray, nativeImage } from 'electron';
-import { readAppSettings, setCloseBehavior, CloseBehavior } from './settings';
+import { readAppSettings, setCloseBehavior, setPetEnabled, CloseBehavior } from './settings';
 
-export function createTray(opts?: { absorb?: () => void }) {
+export function createTray(opts?: { absorb?: () => void; onTogglePet?: (enabled: boolean) => void }) {
   const tray = new Tray(nativeImage.createEmpty());   // 占位；后续换 resources/icons/tray.png
   tray.setToolTip('TT DeepSeek Harness');
   const show = () => { const w = BrowserWindow.getAllWindows()[0]; if (w) { w.show(); w.focus(); } };
@@ -20,6 +20,17 @@ export function createTray(opts?: { absorb?: () => void }) {
       item('每次询问', 'ask'),
       item('最小化到托盘', 'tray'),
       item('直接退出', 'quit'),
+      { type: 'separator' },
+      {
+        label: '桌宠',
+        type: 'checkbox',
+        checked: readAppSettings().pet?.enabled ?? true,
+        click: (item) => {
+          setPetEnabled(item.checked);
+          opts?.onTogglePet?.(item.checked);
+          buildMenu();
+        },
+      },
       { type: 'separator' },
       { label: '退出', click: () => app.quit() },
     ]));
