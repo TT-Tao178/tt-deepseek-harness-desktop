@@ -12,6 +12,8 @@ extraResources:
     to: node
   - from: resources/pet/themes/default
     to: pet/themes/default
+  - from: resources/task-events.json
+    to: task-events.json
 win:
   target: [nsis]
   signAndEditExecutable: false
