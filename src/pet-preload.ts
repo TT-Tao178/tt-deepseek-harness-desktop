@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('petApi', {
   getBounds: () => ipcRenderer.invoke('pet:getBounds'),
   screen: () => ipcRenderer.invoke('pet:screen'),
   toggle: () => ipcRenderer.invoke('pet:toggle'),
+  setClickThrough: (v: boolean) => ipcRenderer.invoke('pet:setClickThrough', v),
   onEvent: (cb: (e: any) => void) => {
     const h = (_e: any, ev: any) => cb(ev);
     ipcRenderer.on('pet:event', h);

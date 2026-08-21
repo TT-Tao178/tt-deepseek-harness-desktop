@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu, globalShortcut } from 'electron';
 import path from 'node:path';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { ServiceManager } from './service/ServiceManager';
 import { createWindow } from './window';
 import { createTray } from './tray';
@@ -17,7 +18,18 @@ const pet = new PetManager();
 const kernelUpdater = new KernelManager();
 const eventBridge = new AgentEventBridge();
 
-// §0.3 安全边界（v5.2）：应用数据完全隔离在 userData 下，绝不使用/写入系统 ~/.dsh
+// bugfix：全局异常捕获——写日志、不弹原生错误框
+const mainLog = () => path.join(app.getPath('userData'), 'logs', 'main.log');
+function logError(tag: string, err: unknown) {
+  try {
+    mkdirSync(path.dirname(mainLog()), { recursive: true });
+    appendFileSync(mainLog(), `[${new Date().toISOString()}] ${tag}: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+  } catch { /* 日志失败不影响运行 */ }
+}
+process.on('uncaughtException', (e) => { logError('uncaughtException', e); });
+process.on('unhandledRejection', (e) => { logError('unhandledRejection', e); });
+
+// §0.3 安全边界：应用数据完全隔离在 userData 下，绝不使用/写入系统 ~/.dsh
 if (!process.env.DSH_HOME) {
   process.env.DSH_HOME = path.join(app.getPath('userData'), 'dsh-home');
 }
@@ -28,52 +40,60 @@ if (!gotLock) {
 } else {
   app.on('second-instance', () => {
     if (win && !win.isDestroyed()) {
-      if (pet.absorbed) pet.release(win);          // v6.1 O7：被收进桌宠时一并放出
+      if (pet.absorbed) pet.release(win);
       else { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
     }
   });
 
   app.whenReady().then(async () => {
-    // V6-S0: 移除 File/Edit 菜单栏（Windows）；macOS 保留系统必需菜单（P1 细化）
+    // V6-S0: 移除 File/Edit 菜单栏
     if (process.platform !== 'darwin') Menu.setApplicationMenu(null);
+
     kernelUpdater.init();
     kernelUpdater.onNotify = (msg) => console.log('[kernel-update]', msg);
-    pet.create();
+    try { pet.create(); } catch (e) { logError('pet.create', e); }
     registerPetMenuIpc(pet, () => win);
+
+    // v6.1 §2.5 快捷键（必须 app ready 后注册）
+    try {
+      globalShortcut.register('Ctrl+Alt+P', () => { if (win) pet.absorbed ? pet.release(win) : pet.absorb(win); });
+    } catch (e) { logError('globalShortcut', e); }
+
     service = new ServiceManager();
     service.on('ready', (baseUrl: string) => {
       void (async () => {
-        if (win && !win.isDestroyed()) {      // P1-A：重启恢复复用窗口，不重复建窗
-          await win.loadURL(baseUrl);
-          win.show();
-        } else {
-          win = await createWindow(baseUrl);
-        }
-        pet.attachMainWindow(win);
+        try {
+          if (win && !win.isDestroyed()) {      // P1-A：重启恢复复用窗口
+            await win.loadURL(baseUrl);
+            win.show();
+          } else {
+            win = await createWindow(baseUrl);
+          }
+          pet.attachMainWindow(win);
+          pet.create(win.getBounds());   // 锚定主窗口：桌宠默认出现在主窗口右下
+        } catch (e) { logError('createWindow/loadURL', e); }
       })();
     });
     service.on('exhausted', () => { /* 弹窗：重置 profile */ });
-    // v6.1 §2.6 任务联动：内核日志尾部事件源（规则由 V6-S4 探针固化）
+
+    // v6.1 §2.6 任务联动（规则由 V6-S4 探针固化；异常降级不崩）
     try {
-      const rules = JSON.parse(require('node:fs').readFileSync(require('node:path').join(require('node:path').dirname(require.resolve('./service/ServiceManager.js')), '../../resources/task-events.json'), 'utf8')).map((r: any) => ({ re: new RegExp(r.re), ev: r.ev }));
-      eventBridge.attach(new KernelLogTailSource(require('node:path').join(app.getPath('userData'), 'logs', 'kernel.log'), rules));
+      const rulesPath = path.join(path.dirname(__dirname), 'resources', 'task-events.json');
+      const rules = JSON.parse(require('node:fs').readFileSync(rulesPath, 'utf8')).map((r: any) => ({ re: new RegExp(r.re), ev: r.ev }));
+      eventBridge.attach(new KernelLogTailSource(path.join(app.getPath('userData'), 'logs', 'kernel.log'), rules));
       void eventBridge.start();
       eventBridge.on('taskStarted', (p) => pet.emitTask('taskStarted', p));
       eventBridge.on('taskProgress', (p) => pet.emitTask('taskProgress', p));
       eventBridge.on('taskDone', (p) => pet.emitTask('taskDone', p));
       eventBridge.on('taskError', (p) => pet.emitTask('taskError', p));
-    } catch { /* 规则为空/日志未就绪：桌宠保持 idle（降级不崩） */ }
+    } catch (e) { logError('task-events', e); }
+
     await service.start();
     createTray({ absorb: () => { if (win) pet.absorb(win); } });
     registerIpc(service);
   });
 
-  // v6.1 §2.5 快捷键生命周期
-  if (process.platform !== 'darwin') {
-    globalShortcut.register('Ctrl+Alt+P', () => { if (win) pet.absorbed ? pet.release(win) : pet.absorb(win); });
-  }
   app.on('will-quit', () => { globalShortcut.unregisterAll(); kernelUpdater.dispose(); eventBridge.stop(); });
-
   app.on('before-quit', () => {
     appState.isQuitting = true;
     service?.stop();

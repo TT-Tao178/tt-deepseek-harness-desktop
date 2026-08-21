@@ -66,6 +66,17 @@
     }
   });
 
+  // ---- 透明区域点击穿透（v6.1 bugfix：桌宠矩形透明区不挡鼠标） ----
+  const ROLE = petEl;
+  function updateClickThrough(e) {
+    const r = ROLE.getBoundingClientRect();
+    const inRole = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+    petApi.setClickThrough(!inRole);
+  }
+  document.addEventListener('mousemove', updateClickThrough, true);
+  document.addEventListener('pointermove', updateClickThrough, true);
+  window.addEventListener('blur', () => petApi.setClickThrough(false));
+
   // ---- 视线跟随 ----
   document.addEventListener('mousemove', (e) => {
     const r = petEl.getBoundingClientRect();
