@@ -105,6 +105,10 @@ if (!gotLock) {
           // v6.4.2：向 DSH 页面注入「主题与桌宠」面板（幂等；内核重启后随导航重新注入）
           win.webContents.on('did-finish-load', () => injectUiPanel(win!));
           injectUiPanel(win);
+          // v6.5.2-3：主窗口渲染层 console 回传 main.log（诊断 tt-bg 渐变清理等）
+          win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+            try { appendFileSync(mainLog(), `[${new Date().toISOString()}] [renderer${level}] ${message} @${sourceId}:${line}\n`); } catch { /* 忽略 */ }
+          });
           pet.attachMainWindow(win);
           pet.create(win.getBounds());   // 锚定主窗口：桌宠默认出现在主窗口右下
         } catch (e) { logError('createWindow/loadURL', e); }
