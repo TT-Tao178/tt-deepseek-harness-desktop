@@ -54,17 +54,25 @@ window.__ModuleLoader__.load({
       function clearPageBg() {
         try {
           var vw = window.innerWidth, vh = window.innerHeight;
-          var minArea = vw * vh * 0.6;
+          var viewArea = vw * vh;
+          // 布局表面判定：面积 ≥ 视口 25%，或（接触视口边缘且面积 ≥ 视口 5%）
+          // —— 覆盖 sidebar（~21%，接触左缘）、header（~6%，接触上缘）；内容卡片（小块、不触边）保持原样
+          function isLayoutSurface(el) {
+            var r = el.getBoundingClientRect();
+            var area = r.width * r.height;
+            if (area >= viewArea * 0.25) return true;
+            var touchesEdge = r.left <= 1 || r.top <= 1 || r.right >= vw - 1 || r.bottom >= vh - 1;
+            return touchesEdge && area >= viewArea * 0.05;
+          }
           // 先 body：body 背景在 #tt-bg 之下，清掉更干净
           if (isSolidBg(document.body)) document.body.style.backgroundColor = 'transparent';
-          // 再全树：面积 ≥ 视口 60% 的布局容器
+          // 再全树：布局表面容器透明
           var all = document.body.querySelectorAll('*');
           for (var i = 0; i < all.length; i++) {
             var el = all[i];
             if (el.id === 'tt-bg' || el.id === 'tt-ui-btn' || el.id === 'tt-ui-panel') continue;
             if (!isSolidBg(el)) continue;
-            var r = el.getBoundingClientRect();
-            if (r.width * r.height >= minArea) el.style.backgroundColor = 'transparent';
+            if (isLayoutSurface(el)) el.style.backgroundColor = 'transparent';
           }
         } catch (e) { /* 忽略 */ }
       }
