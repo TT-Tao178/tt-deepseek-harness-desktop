@@ -6,7 +6,7 @@ import { ProviderConfig } from '../provider/types';
 import { listProviders, loadProvider, saveProvider, removeProvider } from '../provider/store';
 import { getTheme, setTheme, listCustom } from '../theme/themeManager';
 import { syncProvidersToDsh } from '../provider/dshSync';
-import { readAppSettings, setPetEnabled } from '../settings';
+import { readAppSettings, setPetEnabled, setCloseBehavior } from '../settings';
 import type { PetManager } from '../pet/PetManager';
 import { C } from './channels';
 
@@ -45,6 +45,12 @@ export function registerIpc(service: ServiceManager, pet?: PetManager) {
   ipcMain.handle(C.petSetEnabled, (_e, v: boolean) => {
     setPetEnabled(!!v);
     pet?.setEnabled(!!v);
+  });
+
+  // v6.5.2-3：关闭窗口行为（从托盘移入 ⚙ 设置面板）
+  ipcMain.handle(C.closeGet, () => readAppSettings().closeBehavior);
+  ipcMain.handle(C.closeSet, (_e, v: any) => {
+    if (['ask', 'tray', 'quit'].includes(v)) setCloseBehavior(v);
   });
 
   ipcMain.handle(C.notify, (_e, title: string, body?: string) => { new Notification({ title, body }).show(); });

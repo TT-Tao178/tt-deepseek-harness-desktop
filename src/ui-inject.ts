@@ -97,6 +97,25 @@ export const UI_PANEL_SCRIPT = `
   pHint.className = 'tt-ui-hint';
   pHint.textContent = '与托盘「桌宠」开关一致；关闭后桌宠窗口立即隐藏。';
 
+  // ---- 关闭窗口行为区（v6.5.2-3：从托盘移入设置面板）----
+  var cSec = document.createElement('div');
+  cSec.className = 'tt-ui-sec';
+  cSec.textContent = '关闭窗口行为';
+  var cRow = document.createElement('div');
+  var cBtns = { ask: '每次询问', tray: '最小化到托盘', quit: '直接退出' };
+  Object.keys(cBtns).forEach(function (k) {
+    var b = document.createElement('span');
+    b.className = 'tt-ui-btn';
+    b.textContent = cBtns[k];
+    b.dataset.mode = k;
+    b.addEventListener('click', function () {
+      if (api.closeBehavior && api.closeBehavior.set) api.closeBehavior.set(k).catch(function () {});
+      var q = cRow.querySelectorAll('.tt-ui-btn');
+      for (var i = 0; i < q.length; i++) q[i].classList.toggle('tt-active', q[i].dataset.mode === k);
+    });
+    cRow.appendChild(b);
+  });
+
   // ---- 背景区 ----
   var bSec = document.createElement('div');
   bSec.className = 'tt-ui-sec';
@@ -160,6 +179,8 @@ export const UI_PANEL_SCRIPT = `
   panel.appendChild(pSec);
   panel.appendChild(pRow);
   panel.appendChild(pHint);
+  panel.appendChild(cSec);
+  panel.appendChild(cRow);
   panel.appendChild(bSec);
   panel.appendChild(bRow);
   panel.appendChild(thumbImg);   // v6.5.1-S2：当前背景缩略图
@@ -185,6 +206,12 @@ export const UI_PANEL_SCRIPT = `
       else { thumbImg.style.display = 'none'; }
       if (st && st.opacity != null) slider.value = Math.round(st.opacity * 100);
       if (window.__ttBg) window.__ttBg.update(st);   // tt-bg 插件显示层
+    }).catch(function () {});
+  }
+  if (api.closeBehavior && api.closeBehavior.get) {
+    api.closeBehavior.get().then(function (v) {
+      var q = cRow.querySelectorAll('.tt-ui-btn');
+      for (var i = 0; i < q.length; i++) q[i].classList.toggle('tt-active', q[i].dataset.mode === v);
     }).catch(function () {});
   }
   if (api.theme && api.theme.get) {
