@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "dshpet",
+  "name": "DSH 官方宠物（默认，素材来自 dsh-pet）",
+  "version": "1.0.0",
+  "author": "PC2005-cloud/dsh-pet（素材）",
+  "renderer": "video",
+  "size": { "width": 462, "height": 260 },
+  "animations": {
+    "idle": ["待机呼吸休闲"],
+    "turn": ["东张西望"],
+    "drag": ["被鼠标拖拽悬空反馈"],
+    "clicks": [
+      "点击回应-开心跃动",
+      "点击回应-害羞惊讶",
+      "点击回应-傲娇生气",
+      "点击回应-挠痒咯咯笑",
+      "点击回应-元气挥手"
+    ],
+    "moves": {
+      "default": { "minDist": 60, "maxDist": 240, "margin": 20, "leadSec": 2, "tailSec": 2 },
+      "actions": [
+        { "name": "螃蟹走路" },
+        { "name": "原地漂浮踏步", "params": { "minDist": 40, "maxDist": 120 } },
+        { "name": "原地左转奔跑", "params": { "minDist": 120, "maxDist": 320 } }
+      ]
+    },
+    "categories": [
+      {
+        "id": "小动作",
+        "weight": 20,
+        "actions": ["超大伸懒腰", "原地小憩沉眠", "打瞌睡被惊醒", "被吓一跳", "写代码"]
+      },
+      {
+        "id": "文字",
+        "weight": 10,
+        "noMirror": true,
+        "actions": ["深度思考碎碎念"]
+      }
+    ]
+  },
+  "animationWeights": { "idle": 10, "turn": 5, "move": 5 },
+  "license": "素材来自 PC2005-cloud/dsh-pet（github.com/PC2005-cloud/dsh-pet）：允许开源使用、禁止商用；代码 MIT。",
+  "note": "皮肤包已入库（T1）；video 渲染器与皮肤切换（T2-T5）完成后生效。"
+}
