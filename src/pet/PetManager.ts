@@ -3,6 +3,7 @@ import path from 'node:path';
 import { readAppSettings, updatePetPos, setPetTheme } from '../settings';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { scanSkins, resolveSkin, activeSkinId, skinAssetUrl, SkinInfo } from './skins';
+import { AssetServer } from './asset-server';
 
 const petLog = () => path.join(app.getPath('userData'), 'logs', 'pet.log');
 function plog(msg: string) {
@@ -14,7 +15,20 @@ export class PetManager {
   private win: BrowserWindow | null = null;
   private mainWin: BrowserWindow | null = null;
   private ipcRegistered = false;
+  private assets: AssetServer | null = null;
   absorbed = false;
+
+  /** v6.4.2-5：启动桌宠素材 HTTP 服务器（127.0.0.1 随机端口；替代 file:// 通道）。 */
+  async ensureAssets(): Promise<void> {
+    if (this.assets) return;
+    this.assets = new AssetServer(() => this.builtinSkinDirs(), () => this.userSkinDir());
+    try { await this.assets.start(); } catch (e) { plog('asset-server start error: ' + String(e)); }
+  }
+
+  private assetsBase(skinId: string): string | null {
+    if (this.assets && this.assets.port) return this.assets.urlFor(skinId);
+    return null;
+  }
 
   create(anchor?: { x: number; y: number; width: number; height: number }): void {
     const saved = readAppSettings().pet?.pos;
@@ -167,11 +181,16 @@ export class PetManager {
         plog('pushSkin: FAIL resolveSkin id=' + id + ' builtin=' + JSON.stringify(this.builtinSkinDirs()) + ' user=' + this.userSkinDir());
         return;
       }
+      const httpBase = this.assetsBase(info.id);
       this.win?.webContents.send('pet:event', {
         type: 'skin',
-        payload: { renderer: info.manifest.renderer, manifest: info.manifest, baseUrl: skinAssetUrl(info.dir) },
+        payload: {
+          renderer: info.manifest.renderer,
+          manifest: info.manifest,
+          baseUrl: httpBase ?? skinAssetUrl(info.dir),   // 优先 HTTP 素材通道；服务器不可用才回退 file://
+        },
       });
-      plog('pushSkin: ' + info.id + ' renderer=' + info.manifest.renderer);
+      plog('pushSkin: ' + info.id + ' renderer=' + info.manifest.renderer + ' base=' + (httpBase ?? 'file:'));
     } catch (e) { plog('pushSkin error: ' + String(e)); }
   }
 }
