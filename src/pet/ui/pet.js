@@ -77,6 +77,8 @@
     next.onerror = () => {
       if (gen !== V.gen) return;
       V.failCount++;
+      console.error('[pet] video error: ' + name + ' fails=' + V.failCount);
+      petApi.reportSkin({ ok: false, phase: 'load', renderer: 'video', name, fails: V.failCount });
       if (V.failCount >= 3) { degradeToCss('视频素材加载失败，已切换到默认皮肤'); return; }
       setTimeout(() => { if (gen === V.gen) onAnimEnded(); }, 1500);   // A2：失败跳过
     };
@@ -92,6 +94,8 @@
     }, 15000);
   }
   function degradeToCss(msg) {
+    console.error('[pet] degrade to css (video fails=' + V.failCount + ')');
+    petApi.reportSkin({ ok: false, phase: 'degrade', renderer: 'video', fails: V.failCount });
     showBubble(msg);
     loadSkin({ renderer: 'css' });
   }
@@ -199,32 +203,38 @@
 
   // ================= 皮肤加载 =================
   function loadSkin(s) {
-    if (skin && skin.renderer === 'video') { cancelMove(); clearTimeout(V.ft); V.gen++; }
-    skin = s;
-    const isVideo = !!(s && s.renderer === 'video');
-    petEl.style.display = isVideo ? 'none' : '';
-    if (isVideo) {
-      if (!vstage) {
-        vstage = document.createElement('div');
-        vstage.id = 'vstage';
-        const style = document.createElement('style');
-        style.textContent = VCSS;
-        document.head.appendChild(style);
-        vstage.innerHTML = '<video class="a"></video><video class="b"></video><canvas class="cv" width="320" height="180"></canvas>';
-        document.body.appendChild(vstage);
+    try {
+      if (skin && skin.renderer === 'video') { cancelMove(); clearTimeout(V.ft); V.gen++; }
+      skin = s;
+      const isVideo = !!(s && s.renderer === 'video');
+      petEl.style.display = isVideo ? 'none' : '';
+      if (isVideo) {
+        if (!vstage) {
+          vstage = document.createElement('div');
+          vstage.id = 'vstage';
+          const style = document.createElement('style');
+          style.textContent = VCSS;
+          document.head.appendChild(style);
+          vstage.innerHTML = '<video class="a"></video><video class="b"></video><canvas class="cv" width="320" height="180"></canvas>';
+          document.body.appendChild(vstage);
+        }
+        vstage.style.display = '';
+        V.elA = vstage.querySelector('video.a');
+        V.elB = vstage.querySelector('video.b');
+        V.front = 0; V.overlay = false; V.current = ''; V.facing = 'left'; V.failCount = 0;
+        bubble.style.top = (window.innerHeight - 180 - 44) + 'px';   // 气泡移到视频舞台上方
+        if (!V.drawRaf) requestAnimationFrame(drawLoop);
+        pickNext();
+      } else {
+        if (vstage) vstage.style.display = 'none';
+        bubble.style.top = '';
+        petEl.style.display = '';
+        petEl.className = 'pet pet-idle';
       }
-      vstage.style.display = '';
-      V.elA = vstage.querySelector('video.a');
-      V.elB = vstage.querySelector('video.b');
-      V.front = 0; V.overlay = false; V.current = ''; V.facing = 'left'; V.failCount = 0;
-      bubble.style.top = (window.innerHeight - 180 - 44) + 'px';   // 气泡移到视频舞台上方
-      if (!V.drawRaf) requestAnimationFrame(drawLoop);
-      pickNext();
-    } else {
-      if (vstage) vstage.style.display = 'none';
-      bubble.style.top = '';
-      petEl.style.display = '';
-      petEl.className = 'pet pet-idle';
+      petApi.reportSkin({ ok: true, renderer: isVideo ? 'video' : 'css' });
+    } catch (err) {
+      console.error('[pet] loadSkin error: ' + String(err));
+      petApi.reportSkin({ ok: false, phase: 'loadSkin', renderer: s && s.renderer, reason: String(err) });
     }
   }
 

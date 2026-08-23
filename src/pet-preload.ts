@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('petApi', {
   screen: () => ipcRenderer.invoke('pet:screen'),
   toggle: () => ipcRenderer.invoke('pet:toggle'),
   setClickThrough: (v: boolean) => ipcRenderer.invoke('pet:setClickThrough', v),
+  reportSkin: (s: unknown) => ipcRenderer.invoke('pet:skinStatus', s),
   onEvent: (cb: (e: any) => void) => {
     const h = (_e: any, ev: any) => cb(ev);
     ipcRenderer.on('pet:event', h);
