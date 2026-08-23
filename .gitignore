@@ -8,3 +8,6 @@ secrets/
 .dsh-home-test/
 .test-user-data/
 .DS_Store
+
+.dsh-home-user/
+mock-user/
