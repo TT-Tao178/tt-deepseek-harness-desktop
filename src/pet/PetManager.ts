@@ -81,6 +81,9 @@ export class PetManager {
       const [x, y] = this.win.getPosition();
       updatePetPos(x, y);
     });
+    // v6.4.2-6：崩溃诊断（渲染进程崩溃/无响应 → pet.log）
+    this.win.webContents.on('render-process-gone', (_e, details) => { plog('render-process-gone: ' + JSON.stringify(details)); });
+    this.win.webContents.on('unresponsive', () => plog('renderer unresponsive'));
     this.win.on('closed', () => { this.win = null; });
     this.registerIpc();
   }

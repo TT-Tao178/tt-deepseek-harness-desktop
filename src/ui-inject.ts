@@ -148,9 +148,12 @@ export const UI_PANEL_SCRIPT = `
   stRow.id = 'tt-ui-status';
   stRow.className = 'tt-ui-hint';
   stRow.style.color = '#7fd18b';
+  var statusTimer = null;
   function setStatus(msg, isErr) {
     stRow.textContent = msg;
     stRow.style.color = isErr ? '#ff6b6b' : '#7fd18b';
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(function () { if (stRow.textContent === msg) stRow.textContent = ''; }, 4000);
   }
 
   panel.appendChild(title);
