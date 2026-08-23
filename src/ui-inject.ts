@@ -46,11 +46,45 @@ export const UI_PANEL_SCRIPT = `
   var bgDiv = document.createElement('div');
   bgDiv.id = 'tt-bg';
   document.body.appendChild(bgDiv);
+  // 清除 DSH 根容器（body 直接子元素）的不透明背景，露出背景层（v6.4.2-7）
+  function clearRootBg() {
+    var kids = document.body.children;
+    for (var i = 0; i < kids.length; i++) {
+      var el = kids[i];
+      if (el === btn || el === panel || el === bgDiv || el.tagName === 'STYLE' || el.tagName === 'SCRIPT') continue;
+      var bg = window.getComputedStyle(el).backgroundColor;
+      if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') el.style.backgroundColor = 'transparent';
+    }
+  }
+  var rootBgTimer = null;
+  function scheduleClearRootBg() {
+    clearTimeout(rootBgTimer);
+    rootBgTimer = setTimeout(clearRootBg, 120);   // 防抖：React 频繁重渲染时限制频率
+  }
+  if (window.MutationObserver) {
+    new MutationObserver(scheduleClearRootBg).observe(document.body, {
+      childList: true, subtree: false, attributes: true, attributeFilter: ['style', 'class'],
+    });
+  }
   window.__ttBg = {
     update: function (st) {
       if (!st) return;
-      bgDiv.style.backgroundImage = st.path ? "url('ttbg://bg')" : '';
+      if (st.path) {
+        bgDiv.style.backgroundImage = "url('ttbg://bg')";
+        // 双保险：html 级背景（在 body/内容之下），根容器背景透明后可见
+        document.documentElement.style.backgroundImage = "url('ttbg://bg')";
+        document.documentElement.style.backgroundSize = 'cover';
+        document.documentElement.style.backgroundPosition = 'center';
+        document.documentElement.style.backgroundAttachment = 'fixed';
+      } else {
+        bgDiv.style.backgroundImage = '';
+        document.documentElement.style.backgroundImage = '';
+        document.documentElement.style.backgroundSize = '';
+        document.documentElement.style.backgroundPosition = '';
+        document.documentElement.style.backgroundAttachment = '';
+      }
       bgDiv.style.opacity = st.opacity != null ? st.opacity : 1;
+      clearRootBg();
     }
   };
 
