@@ -113,11 +113,18 @@ export const UI_PANEL_SCRIPT = `
   var upBtn = document.createElement('span');
   upBtn.className = 'tt-ui-btn';
   upBtn.textContent = '上传背景图片';
-  upBtn.addEventListener('click', function () { if (api.bg && api.bg.upload) api.bg.upload().catch(function () {}); });
+  upBtn.addEventListener('click', function () {
+    if (!(api.bg && api.bg.upload)) { setStatus('当前版本不支持背景上传', true); return; }
+    setStatus('正在打开上传窗口…');
+    api.bg.upload().then(function () { setStatus('上传窗口已打开'); }).catch(function (e) { setStatus('打开失败：' + String(e && e.message ? e.message : e), true); });
+  });
   var clrBtn = document.createElement('span');
   clrBtn.className = 'tt-ui-btn';
   clrBtn.textContent = '清除背景';
-  clrBtn.addEventListener('click', function () { if (api.bg && api.bg.clear) api.bg.clear().catch(function () {}); });
+  clrBtn.addEventListener('click', function () {
+    if (!(api.bg && api.bg.clear)) { setStatus('当前版本不支持清除背景', true); return; }
+    api.bg.clear().then(function () { setStatus('背景已清除'); }).catch(function (e) { setStatus('清除失败：' + String(e && e.message ? e.message : e), true); });
+  });
   bRow.appendChild(upBtn);
   bRow.appendChild(clrBtn);
   var opRow = document.createElement('div');
@@ -137,6 +144,14 @@ export const UI_PANEL_SCRIPT = `
   var bHint = document.createElement('div');
   bHint.className = 'tt-ui-hint';
   bHint.textContent = '建议 16:9、≥1920×1080、≤20MB；上传窗口内有完整说明。';
+  var stRow = document.createElement('div');
+  stRow.id = 'tt-ui-status';
+  stRow.className = 'tt-ui-hint';
+  stRow.style.color = '#7fd18b';
+  function setStatus(msg, isErr) {
+    stRow.textContent = msg;
+    stRow.style.color = isErr ? '#ff6b6b' : '#7fd18b';
+  }
 
   panel.appendChild(title);
   panel.appendChild(tSec);
@@ -149,6 +164,7 @@ export const UI_PANEL_SCRIPT = `
   panel.appendChild(bRow);
   panel.appendChild(opRow);
   panel.appendChild(bHint);
+  panel.appendChild(stRow);
 
   document.body.appendChild(btn);
   document.body.appendChild(panel);

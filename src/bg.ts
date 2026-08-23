@@ -3,13 +3,21 @@
 // - 上传小窗口：比例/分辨率说明 + 预览 + 设为背景（magic bytes 校验 + ≤20MB）
 // - 透明度滑块：settings.background.opacity（10%~100%）
 import { app, BrowserWindow, dialog, ipcMain, net, Notification, protocol } from 'electron';
-import { readFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readAppSettings, setBackground } from './settings';
 
 const BG_DIR = () => path.join(app.getPath('userData'), 'backgrounds');
 const ALLOWED = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
+
+/** v6.4.2-5：bg 模块日志（写 main.log，诊断"按钮没反应"类问题）。 */
+function blog(msg: string): void {
+  try {
+    mkdirSync(path.join(app.getPath('userData'), 'logs'), { recursive: true });
+    appendFileSync(path.join(app.getPath('userData'), 'logs', 'main.log'), `[${new Date().toISOString()}] [bg] ${msg}\n`);
+  } catch { /* 忽略 */ }
+}
 
 /** 必须在 app ready 之前调用（注册 ttbg 协议特权：绕过页面 CSP）。 */
 export function registerBgSchemes(): void {
@@ -49,25 +57,36 @@ export function registerBackground(winGetter: () => BrowserWindow | null): void 
     return net.fetch(pathToFileURL(f).toString());
   });
 
-  ipcMain.handle('bg:get', () => ({ path: activeBgPath() ? 'ttbg://bg' : null, opacity: readAppSettings().background?.opacity ?? 1 }));
+  ipcMain.handle('bg:get', () => {
+    const st = { path: activeBgPath() ? 'ttbg://bg' : null, opacity: readAppSettings().background?.opacity ?? 1 };
+    blog('bg:get -> ' + JSON.stringify(st));
+    return st;
+  });
   ipcMain.handle('bg:setOpacity', (_e, v: number) => {
     const o = Math.min(1, Math.max(0.05, Number(v) || 1));
     setBackground({ opacity: o });
     applyToWindow(winGetter);
+    blog('bg:setOpacity -> ' + o);
   });
   ipcMain.handle('bg:clear', () => {
     const p = readAppSettings().background?.path;
     if (p) { try { unlinkSync(p); } catch { /* 忽略 */ } }
     setBackground({ path: undefined as any, opacity: 1 });
     applyToWindow(winGetter);
+    blog('bg:clear');
   });
-  ipcMain.handle('bg:upload', () => openUploadWindow());
+  ipcMain.handle('bg:upload', () => {
+    blog('bg:upload -> openUploadWindow');
+    try { openUploadWindow(); return { ok: true }; } catch (e) { blog('bg:upload error: ' + String(e)); return { ok: false, error: String(e) }; }
+  });
   ipcMain.handle('bg:pick', async () => {
     const r = await dialog.showOpenDialog({
       properties: ['openFile'],
       filters: [{ name: '图片', extensions: ALLOWED }],
     });
-    return r.canceled || !r.filePaths.length ? null : r.filePaths[0];
+    const p = r.canceled || !r.filePaths.length ? null : r.filePaths[0];
+    blog('bg:pick -> ' + (p ?? 'cancel'));
+    return p;
   });
   ipcMain.handle('bg:apply', (_e, file: string) => {
     try {
@@ -83,8 +102,10 @@ export function registerBackground(winGetter: () => BrowserWindow | null): void 
       applyToWindow(winGetter);
       closeUploadWindow();
       new Notification({ title: '背景已更新', body: '图片已设为应用背景，可在「主题与桌宠」里调透明度。' }).show();
+      blog('bg:apply OK -> ' + dest);
       return { ok: true };
     } catch (e) {
+      blog('bg:apply error: ' + String(e));
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   });

@@ -58,7 +58,7 @@ if (!gotLock) {
     kernelUpdater.init();
     kernelUpdater.onNotify = (msg) => console.log('[kernel-update]', msg);
     if (readAppSettings().pet?.enabled ?? true) {
-      try { pet.create(); } catch (e) { logError('pet.create', e); }
+      try { await pet.ensureAssets(); pet.create(); } catch (e) { logError('pet.create', e); }
     }
     registerPetMenuIpc(pet, () => win);
 
