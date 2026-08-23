@@ -1,8 +1,21 @@
 import { app, BrowserWindow, Menu, MenuItemConstructorOptions, Tray, nativeImage } from 'electron';
+import path from 'node:path';
 import { readAppSettings, setCloseBehavior, setPetEnabled, CloseBehavior } from './settings';
 
+/** v6.4.2 修复：托盘空图标（原 createEmpty 占位）。加载真实图标，失败兜底 createEmpty。 */
+function trayIcon(): Electron.NativeImage {
+  const p = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.ico')
+    : path.join(app.getAppPath(), 'resources', 'icon.ico');
+  try {
+    const img = nativeImage.createFromPath(p);
+    if (!img.isEmpty()) return img.resize({ width: 16, height: 16 });
+  } catch { /* 兜底 */ }
+  return nativeImage.createEmpty();
+}
+
 export function createTray(opts?: { absorb?: () => void; onTogglePet?: (enabled: boolean) => void }) {
-  const tray = new Tray(nativeImage.createEmpty());   // 占位；后续换 resources/icons/tray.png
+  const tray = new Tray(trayIcon());
   tray.setToolTip('TT DeepSeek Harness');
   const show = () => { const w = BrowserWindow.getAllWindows()[0]; if (w) { w.show(); w.focus(); } };
 
