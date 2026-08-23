@@ -66,13 +66,17 @@ window.__ModuleLoader__.load({
           }
           // 先 body：body 背景在 #tt-bg 之下，清掉更干净
           if (isSolidBg(document.body)) document.body.style.backgroundColor = 'transparent';
-          // 再全树：布局表面容器透明
+          // 再全树：布局表面容器透明 + 清除纯渐变装饰（如工作区"新对话"下的渐变白；url() 背景图保留）
           var all = document.body.querySelectorAll('*');
           for (var i = 0; i < all.length; i++) {
             var el = all[i];
             if (el.id === 'tt-bg' || el.id === 'tt-ui-btn' || el.id === 'tt-ui-panel') continue;
-            if (!isSolidBg(el)) continue;
-            if (isLayoutSurface(el)) el.style.backgroundColor = 'transparent';
+            if (!isLayoutSurface(el)) continue;
+            if (isSolidBg(el)) el.style.backgroundColor = 'transparent';
+            try {
+              var bi = window.getComputedStyle(el).backgroundImage;
+              if (bi && bi.indexOf('gradient') !== -1 && bi.indexOf('url(') === -1) el.style.backgroundImage = 'none';
+            } catch (e2) { /* 忽略 */ }
           }
         } catch (e) { /* 忽略 */ }
       }
@@ -94,14 +98,13 @@ window.__ModuleLoader__.load({
         update: function (st) {
           if (!st) return;
           var d = ensureBg();
-          clearPageBg();
-          if (st.path) {
-            d.style.backgroundImage = "url('ttbg://bg')";
-            d.style.opacity = st.opacity != null ? st.opacity : 1;
-          } else {
-            d.style.backgroundImage = '';
-            d.style.opacity = 1;
+          if (!d) return;
+          if (st.path !== undefined) {        // 全量（path 变化）→ 重设背景图 + 重清布局表面
+            if (st.path) d.style.backgroundImage = "url('ttbg://bg')";
+            else d.style.backgroundImage = '';
+            clearPageBg();
           }
+          if (st.opacity != null) d.style.opacity = st.opacity;   // 局部（透明度）只改 opacity，避免闪烁
         }
       };
 
