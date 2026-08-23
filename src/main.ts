@@ -12,6 +12,7 @@ import { AgentEventBridge } from './pet/AgentEventBridge';
 import { KernelLogTailSource } from './pet/KernelLogTailSource';
 import { KernelManager } from './pet/KernelManager';
 import { registerPetMenuIpc } from './ipc/pet';
+import { injectUiPanel } from './ui-inject';
 
 let service: ServiceManager;
 let win: BrowserWindow | null = null;
@@ -72,6 +73,9 @@ if (!gotLock) {
           } else {
             win = await createWindow(baseUrl);
           }
+          // v6.4.2：向 DSH 页面注入「主题与桌宠」面板（幂等；内核重启后随导航重新注入）
+          win.webContents.on('did-finish-load', () => injectUiPanel(win!));
+          injectUiPanel(win);
           pet.attachMainWindow(win);
           pet.create(win.getBounds());   // 锚定主窗口：桌宠默认出现在主窗口右下
         } catch (e) { logError('createWindow/loadURL', e); }
@@ -98,7 +102,7 @@ if (!gotLock) {
       absorb: () => { if (win) pet.absorb(win); },
       onTogglePet: (enabled) => { try { pet.setEnabled(enabled); } catch (e) { logError('pet.setEnabled', e); } },
     });
-    registerIpc(service);
+    registerIpc(service, pet);
   });
 
   app.on('will-quit', () => { globalShortcut.unregisterAll(); kernelUpdater.dispose(); eventBridge.stop(); });

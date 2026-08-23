@@ -3,6 +3,7 @@ export const C = {
   providerList: 'provider:list', providerSave: 'provider:save', providerRemove: 'provider:remove',
   providerTest: 'provider:test', providerProbeLocal: 'provider:probeLocal', providerListModels: 'provider:listModels',
   themeGet: 'theme:get', themeSet: 'theme:set', themeListCustom: 'theme:listCustom',
+  petGetEnabled: 'pet:getEnabled', petSetEnabled: 'pet:setEnabled',
   notify: 'notify',
   dialogOpenDirectory: 'dialog:openDirectory', dialogOpenFile: 'dialog:openFile', dialogSaveFile: 'dialog:saveFile',
   shellOpenExternal: 'shell:openExternal', shellShowItem: 'shell:showItemInFolder',

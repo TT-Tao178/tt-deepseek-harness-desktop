@@ -6,9 +6,11 @@ import { ProviderConfig } from '../provider/types';
 import { listProviders, loadProvider, saveProvider, removeProvider } from '../provider/store';
 import { getTheme, setTheme, listCustom } from '../theme/themeManager';
 import { syncProvidersToDsh } from '../provider/dshSync';
+import { readAppSettings, setPetEnabled } from '../settings';
+import type { PetManager } from '../pet/PetManager';
 import { C } from './channels';
 
-export function registerIpc(service: ServiceManager) {
+export function registerIpc(service: ServiceManager, pet?: PetManager) {
   ipcMain.handle(C.serviceGetStatus, () => ({ state: service.state, baseUrl: service.baseUrl }));
   ipcMain.handle(C.serviceRestart, () => service.restart());
 
@@ -37,6 +39,13 @@ export function registerIpc(service: ServiceManager) {
   ipcMain.handle(C.themeGet, () => getTheme());
   ipcMain.handle(C.themeSet, (_e, mode: any) => setTheme(mode));
   ipcMain.handle(C.themeListCustom, () => listCustom());
+
+  // v6.4.2：DSH 界面"主题与桌宠"面板 —— 桌宠开关（持久化 + 窗口操作，与托盘双入口同源）
+  ipcMain.handle(C.petGetEnabled, () => readAppSettings().pet?.enabled ?? true);
+  ipcMain.handle(C.petSetEnabled, (_e, v: boolean) => {
+    setPetEnabled(!!v);
+    pet?.setEnabled(!!v);
+  });
 
   ipcMain.handle(C.notify, (_e, title: string, body?: string) => { new Notification({ title, body }).show(); });
 

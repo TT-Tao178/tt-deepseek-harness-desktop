@@ -12,6 +12,8 @@ extraResources:
     to: node
   - from: resources/pet/themes/default
     to: pet/themes/default
+  - from: resources/pet/themes/dshpet
+    to: pet/themes/dshpet
   - from: resources/task-events.json
     to: task-events.json
 win:
