@@ -20,8 +20,7 @@
     · 比例：<b>16:9</b>（21:9 超宽屏也可以）<br>
     · 分辨率：≥ <b>1920×1080</b><br>
     · 大小：≤ 20MB<br>
-    · 格式：PNG / JPG / JPEG / WebP / GIF<br>
-    · 图片会整体铺满应用背景；上传后可在「主题与桌宠」面板用<b>背景透明度</b>滑块调节
+    · 格式：PNG / JPG / JPEG / WebP / GIF
   </div>
   <div id="info">尚未选择图片</div>
   <img id="preview" alt="预览">
@@ -41,7 +40,7 @@
       $('info').style.color = '#666';
       if (r.thumb) { $('preview').src = r.thumb; }
       else { $('preview').src = 'file:///' + r.path.replace(/\\/g, '/'); }
-      $('preview').style.display = '';
+      $('preview').style.display = 'block';   // 修复：'' 会回落到 CSS 的 display:none，缩略图永不显示
       $('preview').onload = function () {
         $('info').textContent = '已选择：' + r.path.split(/[\\/]/).pop()
           + '（' + $('preview').naturalWidth + '×' + $('preview').naturalHeight + '）';
