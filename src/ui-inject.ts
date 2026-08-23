@@ -31,11 +31,28 @@ export const UI_PANEL_SCRIPT = `
     '.tt-ui-btn:hover{background:rgba(255,255,255,.2)}' +
     '.tt-ui-btn.tt-active{background:#4d7cfe;color:#fff}' +
     '.tt-ui-row{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}' +
-    '.tt-ui-hint{font-size:11px;color:#7a828e;margin-top:8px}';
+    '.tt-ui-hint{font-size:11px;color:#7a828e;margin-top:8px}' +
+    '.tt-ui-range{width:120px}' +
+    '#tt-bg{position:fixed;inset:0;z-index:-1;pointer-events:none;background-size:cover;background-position:center;background-repeat:no-repeat;opacity:1;transition:opacity .3s}';
 
   var style = document.createElement('style');
   style.textContent = CSS;
   document.head.appendChild(style);
+
+  // ---- 背景层（内容之下；ttbg:// 协议绕过页面 CSP 加载本地图片）----
+  var bgTransparent = document.createElement('style');
+  bgTransparent.textContent = 'html,body{background:transparent!important}';
+  document.head.appendChild(bgTransparent);
+  var bgDiv = document.createElement('div');
+  bgDiv.id = 'tt-bg';
+  document.body.appendChild(bgDiv);
+  window.__ttBg = {
+    update: function (st) {
+      if (!st) return;
+      bgDiv.style.backgroundImage = st.path ? "url('ttbg://bg')" : '';
+      bgDiv.style.opacity = st.opacity != null ? st.opacity : 1;
+    }
+  };
 
   var btn = document.createElement('div');
   btn.id = 'tt-ui-btn';
@@ -88,6 +105,39 @@ export const UI_PANEL_SCRIPT = `
   pHint.className = 'tt-ui-hint';
   pHint.textContent = '与托盘「桌宠」开关一致；关闭后桌宠窗口立即隐藏。';
 
+  // ---- 背景区 ----
+  var bSec = document.createElement('div');
+  bSec.className = 'tt-ui-sec';
+  bSec.textContent = '背景';
+  var bRow = document.createElement('div');
+  var upBtn = document.createElement('span');
+  upBtn.className = 'tt-ui-btn';
+  upBtn.textContent = '上传背景图片';
+  upBtn.addEventListener('click', function () { if (api.bg && api.bg.upload) api.bg.upload().catch(function () {}); });
+  var clrBtn = document.createElement('span');
+  clrBtn.className = 'tt-ui-btn';
+  clrBtn.textContent = '清除背景';
+  clrBtn.addEventListener('click', function () { if (api.bg && api.bg.clear) api.bg.clear().catch(function () {}); });
+  bRow.appendChild(upBtn);
+  bRow.appendChild(clrBtn);
+  var opRow = document.createElement('div');
+  opRow.className = 'tt-ui-row';
+  var opLabel = document.createElement('span');
+  opLabel.textContent = '背景透明度';
+  var slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = 10; slider.max = 100; slider.value = 100;
+  slider.className = 'tt-ui-range';
+  slider.addEventListener('input', function () {
+    bgDiv.style.opacity = Number(slider.value) / 100;
+    if (api.bg && api.bg.setOpacity) api.bg.setOpacity(Number(slider.value) / 100).catch(function () {});
+  });
+  opRow.appendChild(opLabel);
+  opRow.appendChild(slider);
+  var bHint = document.createElement('div');
+  bHint.className = 'tt-ui-hint';
+  bHint.textContent = '建议 16:9、≥1920×1080、≤20MB；上传窗口内有完整说明。';
+
   panel.appendChild(title);
   panel.appendChild(tSec);
   panel.appendChild(tRow);
@@ -95,6 +145,10 @@ export const UI_PANEL_SCRIPT = `
   panel.appendChild(pSec);
   panel.appendChild(pRow);
   panel.appendChild(pHint);
+  panel.appendChild(bSec);
+  panel.appendChild(bRow);
+  panel.appendChild(opRow);
+  panel.appendChild(bHint);
 
   document.body.appendChild(btn);
   document.body.appendChild(panel);
@@ -108,6 +162,9 @@ export const UI_PANEL_SCRIPT = `
   });
 
   // ---- 初始化状态 ----
+  if (api.bg && api.bg.get) {
+    api.bg.get().then(function (st) { window.__ttBg.update(st); if (st && st.opacity != null) slider.value = Math.round(st.opacity * 100); }).catch(function () {});
+  }
   if (api.theme && api.theme.get) {
     api.theme.get().then(function (t) {
       var m = t && t.mode;

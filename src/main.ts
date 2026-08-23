@@ -13,6 +13,10 @@ import { KernelLogTailSource } from './pet/KernelLogTailSource';
 import { KernelManager } from './pet/KernelManager';
 import { registerPetMenuIpc } from './ipc/pet';
 import { injectUiPanel } from './ui-inject';
+import { registerBgSchemes, registerBackground } from './bg';
+
+// v6.4.2-4：ttbg:// 协议特权（必须在 app ready 前注册）
+registerBgSchemes();
 
 let service: ServiceManager;
 let win: BrowserWindow | null = null;
@@ -103,6 +107,7 @@ if (!gotLock) {
       onTogglePet: (enabled) => { try { pet.setEnabled(enabled); } catch (e) { logError('pet.setEnabled', e); } },
     });
     registerIpc(service, pet);
+    registerBackground(() => win);   // v6.4.2-4：背景上传/透明度/ttbg 协议
   });
 
   app.on('will-quit', () => { globalShortcut.unregisterAll(); kernelUpdater.dispose(); eventBridge.stop(); });
