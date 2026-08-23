@@ -20,22 +20,20 @@ test('脚本包含幂等标记与关键 IPC 通道', () => {
   assert.ok(s.includes('主题（目前为默认）'), '应含主题默认占位文案');
 });
 
-test('v6.4.2-4：脚本含背景上传/透明度/背景层', () => {
+test('v6.4.2-4：脚本含背景上传/透明度入口', () => {
   const s = inject.UI_PANEL_SCRIPT;
-  assert.ok(s.includes('__ttBg'), '应暴露 window.__ttBg');
   assert.ok(s.includes('上传背景图片'), '应含上传入口');
   assert.ok(s.includes('背景透明度'), '应含透明度滑块');
-  assert.ok(s.includes('ttbg://bg'), '应使用 ttbg 协议加载本地背景');
   assert.ok(s.includes('16:9'), '应含比例建议说明');
 });
 
-test('v6.5.1-S1：背景层插入 DSH 根容器内部（方案 B）', () => {
+test('v6.5.2-2：面板只留交互（背景显示层由 tt-bg 插件提供）', () => {
   const s = inject.UI_PANEL_SCRIPT;
-  assert.ok(s.includes('#root,#app,.dsw-app,[data-dsw-root]'), '应探测 DSH 根容器');
-  assert.ok(s.includes('insertBefore'), '应把背景层插入根容器第一个子节点');
-  assert.ok(s.includes('mountBg'), '应有挂载函数');
-  assert.ok(!s.includes('clearRootBg'), '应已删除"清根容器背景"hack');
-  assert.ok(!s.includes('html,body{background:transparent'), '应已删除 html/body 透明 hack');
+  assert.ok(!s.includes('findBgRoot'), '不应再含根容器探测');
+  assert.ok(!s.includes('insertBefore'), '不应再插 root 子节点');
+  assert.ok(!s.includes('mountBg'), '不应再含挂载函数');
+  assert.ok(s.includes('window.__ttBg'), '应调用 tt-bg 插件的 __ttBg（滑块/初始化）');
+  assert.ok(s.includes('thumbImg'), '应保留面板缩略图');
 });
 
 test('v6.5.1-S2：面板含当前背景缩略图', () => {

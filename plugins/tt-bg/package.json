@@ -1,0 +1,19 @@
+{
+  "name": "tt-bg",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TT Desktop 背景显示层（DSH 官方 bundle 插件，gal-view 方式）：页面同源注入背景层 + 页面级背景容器透明化 + window.__ttBg",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web", "inject": [] }
+  },
+  "license": "MIT"
+}
