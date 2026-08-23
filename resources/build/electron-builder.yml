@@ -7,6 +7,7 @@ directories:
 files:
   - dist/**
   - package.json
+  - plugins/tt-bg/**
 extraResources:
   - from: resources/node
     to: node

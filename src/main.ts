@@ -1,6 +1,6 @@
 import { app, BrowserWindow, Menu, globalShortcut } from 'electron';
 import path from 'node:path';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, symlinkSync } from 'node:fs';
 import { ServiceManager } from './service/ServiceManager';
 import { createWindow } from './window';
 import { createTray } from './tray';
@@ -40,6 +40,29 @@ if (!process.env.DSH_HOME) {
   process.env.DSH_HOME = path.join(app.getPath('userData'), 'dsh-home');
 }
 
+/**
+ * v6.5.2-2：确保内核能从 userData dsh-home 解析 tt-bg 插件。
+ * cordis 从 profile 目录向上查找 node_modules——userData 在项目外，向上到不了项目根，
+ * 因此必须在 dsh-home/node_modules 下建 tt-bg junction（幂等；源目录 dev=项目 plugins，
+ * packaged=app 内 plugins）。
+ */
+function ensureKernelPluginLink(): void {
+  try {
+    const srcCandidates = [
+      path.join(app.getAppPath(), 'plugins', 'tt-bg'),
+      path.join(app.getAppPath(), 'node_modules', 'tt-bg'),
+      path.join(process.resourcesPath, 'tt-bg'),
+    ];
+    const src = srcCandidates.find((p) => existsSync(path.join(p, 'package.json')));
+    if (!src) { logError('ensureKernelPluginLink', new Error('tt-bg 包目录未找到')); return; }
+    const homeModules = path.join(app.getPath('userData'), 'dsh-home', 'node_modules');
+    const target = path.join(homeModules, 'tt-bg');
+    if (existsSync(target)) return;
+    mkdirSync(homeModules, { recursive: true });
+    symlinkSync(src, target, 'junction');
+  } catch (e) { logError('ensureKernelPluginLink', e); }
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -54,6 +77,8 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     // V6-S0: 移除 File/Edit 菜单栏
     if (process.platform !== 'darwin') Menu.setApplicationMenu(null);
+
+    ensureKernelPluginLink();   // v6.5.2-2：tt-bg 插件链接（内核解析必需，先于内核启动）
 
     kernelUpdater.init();
     kernelUpdater.onNotify = (msg) => console.log('[kernel-update]', msg);
