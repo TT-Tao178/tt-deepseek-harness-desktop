@@ -33,63 +33,18 @@ export const UI_PANEL_SCRIPT = `
     '.tt-ui-row{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}' +
     '.tt-ui-hint{font-size:11px;color:#7a828e;margin-top:8px}' +
     '.tt-ui-range{width:120px}' +
-    '#tt-bg{position:fixed;inset:0;z-index:-1;pointer-events:none;background-size:cover;background-position:center;background-repeat:no-repeat;opacity:1;transition:opacity .3s}' +
     '#tt-bg-thumb{display:none;max-width:100%;max-height:90px;border-radius:6px;border:1px solid rgba(255,255,255,.15);margin:6px 0;object-fit:cover}';
 
   var style = document.createElement('style');
   style.textContent = CSS;
   document.head.appendChild(style);
 
-  // ---- 背景层（v6.5.1-S1 方案 B：插入 DSH 根容器内部第一个子节点）----
-  // 层叠：root 自身背景色 → bgDiv（负 z、首子节点）→ 后续内容 → "白色之上、文字之下"天然成立
-  var bgDiv = document.createElement('div');
-  bgDiv.id = 'tt-bg';
+  // ---- 面板背景缩略图（v6.5.1-S2）
+  // 背景显示层已移入 dsh 前端（scripts/patch-frontend.cjs 直接改 dist/index.html：
+  // --dsw-alias-bg-base 置透明 + #tt-bg 层 + window.__ttBg）。本面板只负责交互与缩略图。
   var thumbImg = document.createElement('img');
   thumbImg.id = 'tt-bg-thumb';
   thumbImg.alt = '当前背景预览';
-  var mountBgTimer = null;
-  function findBgRoot() {
-    var q = document.querySelector('#root,#app,.dsw-app,[data-dsw-root]');
-    if (q) return q;
-    var best = null, bestArea = 0;
-    var kids = document.body.children;
-    for (var i = 0; i < kids.length; i++) {
-      var el = kids[i];
-      if (el === btn || el === panel || el === bgDiv || el.tagName === 'STYLE' || el.tagName === 'SCRIPT') continue;
-      var r = el.getBoundingClientRect();
-      var area = r.width * r.height;
-      if (area > bestArea) { bestArea = area; best = el; }
-    }
-    return best || document.body;
-  }
-  function mountBg() {
-    if (bgDiv.parentNode) return;                       // 已挂载
-    var root = findBgRoot();
-    if (root && root !== document.body) root.insertBefore(bgDiv, root.firstChild);
-    else document.body.appendChild(bgDiv);
-  }
-  if (window.MutationObserver) {
-    new MutationObserver(function () {
-      if (!bgDiv.parentNode) {                          // root 重建/背景层被移除 → 自愈重挂（防抖）
-        clearTimeout(mountBgTimer);
-        mountBgTimer = setTimeout(mountBg, 120);
-      }
-    }).observe(document.body, { childList: true, subtree: false });
-  }
-  window.__ttBg = {
-    update: function (st) {
-      if (!st) return;
-      mountBg();
-      if (st.path) {
-        bgDiv.style.backgroundImage = "url('ttbg://bg')";
-        if (st.thumb) { thumbImg.src = st.thumb; thumbImg.style.display = ''; }
-      } else {
-        bgDiv.style.backgroundImage = '';
-        thumbImg.style.display = 'none';
-      }
-      bgDiv.style.opacity = st.opacity != null ? st.opacity : 1;
-    }
-  };
 
   var btn = document.createElement('div');
   btn.id = 'tt-ui-btn';
@@ -173,8 +128,9 @@ export const UI_PANEL_SCRIPT = `
   slider.min = 10; slider.max = 100; slider.value = 100;
   slider.className = 'tt-ui-range';
   slider.addEventListener('input', function () {
-    bgDiv.style.opacity = Number(slider.value) / 100;
-    if (api.bg && api.bg.setOpacity) api.bg.setOpacity(Number(slider.value) / 100).catch(function () {});
+    var v = Number(slider.value) / 100;
+    if (window.__ttBg) window.__ttBg.update({ opacity: v });   // 即时（dsh 前端补丁的显示层）
+    if (api.bg && api.bg.setOpacity) api.bg.setOpacity(v).catch(function () {});   // 持久化
   });
   opRow.appendChild(opLabel);
   opRow.appendChild(slider);
@@ -220,7 +176,12 @@ export const UI_PANEL_SCRIPT = `
 
   // ---- 初始化状态 ----
   if (api.bg && api.bg.get) {
-    api.bg.get().then(function (st) { window.__ttBg.update(st); if (st && st.opacity != null) slider.value = Math.round(st.opacity * 100); }).catch(function () {});
+    api.bg.get().then(function (st) {
+      if (st && st.thumb) { thumbImg.src = st.thumb; thumbImg.style.display = ''; }
+      else { thumbImg.style.display = 'none'; }
+      if (st && st.opacity != null) slider.value = Math.round(st.opacity * 100);
+      if (window.__ttBg) window.__ttBg.update(st);   // 背景层（dsh 前端补丁提供）
+    }).catch(function () {});
   }
   if (api.theme && api.theme.get) {
     api.theme.get().then(function (t) {
