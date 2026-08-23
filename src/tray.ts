@@ -2,14 +2,14 @@ import { app, BrowserWindow, Menu, MenuItemConstructorOptions, Tray, nativeImage
 import path from 'node:path';
 import { readAppSettings, setCloseBehavior, setPetEnabled, CloseBehavior } from './settings';
 
-/** v6.4.2 修复：托盘空图标（原 createEmpty 占位）。加载真实图标，失败兜底 createEmpty。 */
+/** v6.4.2 修复：托盘空图标（原 createEmpty 占位）。直接用应用图标 icon.ico（与任务栏一致），失败兜底 createEmpty。 */
 function trayIcon(): Electron.NativeImage {
   const p = app.isPackaged
     ? path.join(process.resourcesPath, 'icon.ico')
     : path.join(app.getAppPath(), 'resources', 'icon.ico');
   try {
     const img = nativeImage.createFromPath(p);
-    if (!img.isEmpty()) return img.resize({ width: 16, height: 16 });
+    if (!img.isEmpty()) return img;   // 原图直接给 Tray（Windows 自动选择合适尺寸）
   } catch { /* 兜底 */ }
   return nativeImage.createEmpty();
 }

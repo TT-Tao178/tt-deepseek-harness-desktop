@@ -18,24 +18,16 @@ export class PetManager {
 
   create(anchor?: { x: number; y: number; width: number; height: number }): void {
     const saved = readAppSettings().pet?.pos;
-    // 已有窗口：若用户未自定义过位置且给了锚点（主窗口），跟随锚点重定位到主窗口左侧
+    // 已有窗口：仅显示（位置以用户记忆为准）
     if (this.win && !this.win.isDestroyed()) {
       this.win.show();
-      if (!saved && anchor) {
-        const wa = screen.getPrimaryDisplay().workArea;
-        const px = Math.max(wa.x, anchor.x - 340);
-        const py = Math.min(Math.max(anchor.y + anchor.height - 390, wa.y), wa.y + wa.height - 360);
-        this.win.setPosition(px, py);
-      }
       return;
     }
-    // 默认位置：锚定主窗口左侧（左侧空间必然可见且不遮挡主窗口；规避虚拟屏幕配置差异）
+    // 默认位置：右侧垂直居中（v6.4.2-3 用户要求）；用户拖动后记忆覆盖
     let pos = saved;
     if (!pos) {
       const wa = screen.getPrimaryDisplay().workArea;
-      const base = anchor ?? { x: wa.x + wa.width, y: wa.y, width: 0, height: 0 };
-      pos = { x: Math.max(wa.x, base.x - 340), y: Math.min(Math.max(base.y + base.height - 390, wa.y), wa.y + wa.height - 360) };
-      if (!anchor) pos = { x: wa.x + wa.width - 340, y: wa.y + wa.height - 390 };
+      pos = { x: wa.x + wa.width - 340, y: wa.y + Math.round((wa.height - 360) / 2) };
     }
     // 越界校验：拉回主屏可见区
     try {
@@ -97,6 +89,10 @@ export class PetManager {
       const b = this.win?.getBounds();
       if (!b) return null;
       return screen.getDisplayMatching(b).workArea;
+    });
+    // v6.4.2-3：渲染层皮肤状态回报（applied/degraded/error）→ pet.log 诊断
+    ipcMain.handle('pet:skinStatus', (_e, status: any) => {
+      plog('skinStatus: ' + JSON.stringify(status));
     });
   }
 
@@ -160,8 +156,12 @@ export class PetManager {
   /** 把当前活动皮肤推给渲染层（渲染层据此构建 css/video 引擎）。 */
   private pushSkin(): void {
     try {
-      const info = resolveSkin(this.builtinSkinDirs(), this.userSkinDir(), this.activeSkinId());
-      if (!info) return;
+      const id = this.activeSkinId();
+      const info = resolveSkin(this.builtinSkinDirs(), this.userSkinDir(), id);
+      if (!info) {
+        plog('pushSkin: FAIL resolveSkin id=' + id + ' builtin=' + JSON.stringify(this.builtinSkinDirs()) + ' user=' + this.userSkinDir());
+        return;
+      }
       this.win?.webContents.send('pet:event', {
         type: 'skin',
         payload: { renderer: info.manifest.renderer, manifest: info.manifest, baseUrl: skinAssetUrl(info.dir) },
