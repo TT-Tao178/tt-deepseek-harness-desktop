@@ -44,6 +44,19 @@ function kernelLogFd(): number {
   return openSync(path.join(dir, 'kernel.log'), 'a');
 }
 
+/** v6.5.2-2：tt-bg 插件 patch 文件路径（dev=项目 plugins；packaged=node_modules 内 file: 依赖复制）。 */
+function resolvePatchArgs(): string[] {
+  const candidates = [
+    path.join(app.getAppPath(), 'plugins', 'tt-bg', 'cordis.patch.yml'),
+    path.join(app.getAppPath(), 'node_modules', 'tt-bg', 'cordis.patch.yml'),
+    path.join(process.resourcesPath, 'tt-bg', 'cordis.patch.yml'),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return ['--patch', p];
+  }
+  return [];
+}
+
 export class ServiceManager extends EventEmitter {
   private child: ChildProcess | null = null;
   private restartTimer: NodeJS.Timeout | null = null;      // V5-3：重启定时器句柄
@@ -60,7 +73,9 @@ export class ServiceManager extends EventEmitter {
     const kernelNode = resolveKernelNode();
     const port = await getFreePort();
     this.port = port;
-    const child = spawn(kernelNode, [dshBin, 'web', '--port', String(port)], {
+    // v6.5.2-2 插件路线：--patch 挂载 tt-bg（背景显示层插件；launcher 级选项，须配 --profile web）
+    const patchArgs = resolvePatchArgs();
+    const child = spawn(kernelNode, [dshBin, '--profile', 'web', ...patchArgs, '--port', String(port)], {
       env: { ...process.env, ...collectKernelKeys() },  // §12.2：注入 provider Key
       stdio: ['ignore', kernelLogFd(), kernelLogFd()],  // 内核 stdout/stderr 落盘，不走管道
       windowsHide: true,  // 不弹黑色控制台窗口（console 子系统子进程默认会弹窗）
