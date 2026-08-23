@@ -41,11 +41,23 @@ function activeBgPath(): string | null {
 
 let uploadWin: BrowserWindow | null = null;
 
+/** 当前背景缩略图 dataURL（120px 宽；失败返回 null）。 */
+function bgThumb(): string | null {
+  const p = activeBgPath();
+  if (!p) return null;
+  try {
+    const img = nativeImage.createFromPath(p);
+    return img.isEmpty() ? null : img.resize({ width: 120 }).toDataURL();
+  } catch {
+    return null;
+  }
+}
+
 /** 把背景状态应用到主窗口（注入脚本暴露的 window.__ttBg.update）。 */
 function applyToWindow(winGetter: () => BrowserWindow | null): void {
   const win = winGetter();
   if (!win || win.isDestroyed()) return;
-  const st = { path: activeBgPath() ? 'ttbg://bg' : null, opacity: readAppSettings().background?.opacity ?? 1 };
+  const st = { path: activeBgPath() ? 'ttbg://bg' : null, opacity: readAppSettings().background?.opacity ?? 1, thumb: bgThumb() };
   win.webContents.executeJavaScript('window.__ttBg && window.__ttBg.update(' + JSON.stringify(st) + ')').catch(() => {});
 }
 
@@ -59,8 +71,8 @@ export function registerBackground(winGetter: () => BrowserWindow | null): void 
   });
 
   ipcMain.handle('bg:get', () => {
-    const st = { path: activeBgPath() ? 'ttbg://bg' : null, opacity: readAppSettings().background?.opacity ?? 1 };
-    blog('bg:get -> ' + JSON.stringify(st));
+    const st = { path: activeBgPath() ? 'ttbg://bg' : null, opacity: readAppSettings().background?.opacity ?? 1, thumb: bgThumb() };
+    blog('bg:get -> ' + JSON.stringify({ path: st.path, opacity: st.opacity, thumb: !!st.thumb }));
     return st;
   });
   ipcMain.handle('bg:setOpacity', (_e, v: number) => {
