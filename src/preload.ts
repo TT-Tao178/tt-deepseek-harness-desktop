@@ -21,6 +21,10 @@ contextBridge.exposeInMainWorld('dshDesktop', {
     getEnabled: invoke('pet:getEnabled'),
     setEnabled: (v: boolean) => ipcRenderer.invoke('pet:setEnabled', v),
   },
+  closeBehavior: {
+    get: invoke('closeBehavior:get'),
+    set: (v: string) => ipcRenderer.invoke('closeBehavior:set', v),
+  },
   bg: {
     get: invoke('bg:get'),
     setOpacity: (v: number) => ipcRenderer.invoke('bg:setOpacity', v),
