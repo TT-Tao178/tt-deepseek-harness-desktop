@@ -2,7 +2,7 @@
 // - ttbg:// 自定义协议（bypassCSP）：DSH 页面（http）安全加载本地背景图
 // - 上传小窗口：比例/分辨率说明 + 预览 + 设为背景（magic bytes 校验 + ≤20MB）
 // - 透明度滑块：settings.background.opacity（10%~100%）
-import { app, BrowserWindow, dialog, ipcMain, net, Notification, protocol } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, net, Notification, protocol } from 'electron';
 import { readFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -50,10 +50,11 @@ function applyToWindow(winGetter: () => BrowserWindow | null): void {
 }
 
 export function registerBackground(winGetter: () => BrowserWindow | null): void {
-  // ttbg://bg → 当前背景图片文件流
+  // ttbg://bg → 当前背景图片文件流（带日志，确认请求是否到达）
   protocol.handle('ttbg', (req) => {
     const f = activeBgPath();
-    if (!f) return new Response('', { status: 404 });
+    if (!f) { blog('ttbg 404 (no bg path)'); return new Response('', { status: 404 }); }
+    blog('ttbg serve -> ' + f);
     return net.fetch(pathToFileURL(f).toString());
   });
 
@@ -85,8 +86,16 @@ export function registerBackground(winGetter: () => BrowserWindow | null): void 
       filters: [{ name: '图片', extensions: ALLOWED }],
     });
     const p = r.canceled || !r.filePaths.length ? null : r.filePaths[0];
-    blog('bg:pick -> ' + (p ?? 'cancel'));
-    return p;
+    // 主进程生成缩略图 dataURL（不依赖 file:// 加载；GIF/WebP 失败时回退 file:// 预览）
+    let thumb: string | null = null;
+    if (p) {
+      try {
+        const img = nativeImage.createFromPath(p);
+        if (!img.isEmpty()) thumb = img.resize({ width: 200 }).toDataURL();
+      } catch { /* 缩略图失败不阻塞 */ }
+    }
+    blog('bg:pick -> ' + (p ?? 'cancel') + (thumb ? ' (thumb ok)' : ''));
+    return { path: p, thumb };
   });
   ipcMain.handle('bg:apply', (_e, file: string) => {
     try {

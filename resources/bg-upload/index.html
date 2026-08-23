@@ -34,13 +34,18 @@
     let picked = null;
     const $ = (id) => document.getElementById(id);
     $('pick').onclick = async () => {
-      const p = await bgApi.pick();
-      if (!p) return;
-      picked = p;
-      $('info').textContent = '已选择：' + p.split(/[\\/]/).pop();
+      const r = await bgApi.pick();
+      if (!r || !r.path) return;
+      picked = r.path;
+      $('info').textContent = '已选择：' + r.path.split(/[\\/]/).pop();
       $('info').style.color = '#666';
-      $('preview').src = 'file:///' + p.replace(/\\/g, '/');
+      if (r.thumb) { $('preview').src = r.thumb; }
+      else { $('preview').src = 'file:///' + r.path.replace(/\\/g, '/'); }
       $('preview').style.display = '';
+      $('preview').onload = function () {
+        $('info').textContent = '已选择：' + r.path.split(/[\\/]/).pop()
+          + '（' + $('preview').naturalWidth + '×' + $('preview').naturalHeight + '）';
+      };
       $('apply').disabled = false;
     };
     $('apply').onclick = async () => {
