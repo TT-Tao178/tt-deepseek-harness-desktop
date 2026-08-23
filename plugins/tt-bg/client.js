@@ -64,20 +64,33 @@ window.__ModuleLoader__.load({
             var touchesEdge = r.left <= 1 || r.top <= 1 || r.right >= vw - 1 || r.bottom >= vh - 1;
             return touchesEdge && area >= viewArea * 0.05;
           }
+          // 渐变装饰清除判定（v6.5.2-3）：纯渐变（无 url()）且 布局表面 或 面积 ≥ 视口 1% 或 触边
+          function shouldClearGradient(el) {
+            var r = el.getBoundingClientRect();
+            var area = r.width * r.height;
+            var touchesEdge = r.left <= 1 || r.top <= 1 || r.right >= vw - 1 || r.bottom >= vh - 1;
+            return area >= viewArea * 0.01 || touchesEdge;
+          }
           // 先 body：body 背景在 #tt-bg 之下，清掉更干净
           if (isSolidBg(document.body)) document.body.style.backgroundColor = 'transparent';
-          // 再全树：布局表面容器透明 + 清除纯渐变装饰（如工作区"新对话"下的渐变白；url() 背景图保留）
+          // 再全树：布局表面容器透明 + 清除渐变装饰（如"连接设置"下方白色渐变；url() 背景图保留）
+          var diag = [];   // 诊断：记录未被清除的渐变元素（进 main.log）
           var all = document.body.querySelectorAll('*');
           for (var i = 0; i < all.length; i++) {
             var el = all[i];
             if (el.id === 'tt-bg' || el.id === 'tt-ui-btn' || el.id === 'tt-ui-panel') continue;
-            if (!isLayoutSurface(el)) continue;
-            if (isSolidBg(el)) el.style.backgroundColor = 'transparent';
-            try {
-              var bi = window.getComputedStyle(el).backgroundImage;
-              if (bi && bi.indexOf('gradient') !== -1 && bi.indexOf('url(') === -1) el.style.backgroundImage = 'none';
-            } catch (e2) { /* 忽略 */ }
+            if (isLayoutSurface(el) && isSolidBg(el)) el.style.backgroundColor = 'transparent';
+            var bi = null;
+            try { bi = window.getComputedStyle(el).backgroundImage; } catch (e2) { /* 忽略 */ }
+            if (!bi || bi.indexOf('gradient') === -1) continue;
+            if (bi.indexOf('url(') !== -1) continue;   // 含图片背景的渐变不碰
+            if (shouldClearGradient(el)) { el.style.backgroundImage = 'none'; }
+            else if (diag.length < 6) {
+              var r = el.getBoundingClientRect();
+              diag.push('id=' + (el.id || '-') + ' cls=' + (typeof el.className === 'string' ? el.className.slice(0, 50) : '-') + ' size=' + Math.round(r.width) + 'x' + Math.round(r.height) + ' pos=(' + Math.round(r.left) + ',' + Math.round(r.top) + ') bg=' + bi.slice(0, 60));
+            }
           }
+          if (diag.length > 0) console.log('[tt-bg] 未清除的渐变元素: ' + diag.join(' | '));
         } catch (e) { /* 忽略 */ }
       }
 
