@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, Notification, screen } from 'electron';
 import path from 'node:path';
 import { readAppSettings, updatePetPos, setPetTheme } from '../settings';
 import { appendFileSync, mkdirSync } from 'node:fs';
@@ -90,9 +90,14 @@ export class PetManager {
       if (!b) return null;
       return screen.getDisplayMatching(b).workArea;
     });
-    // v6.4.2-3：渲染层皮肤状态回报（applied/degraded/error）→ pet.log 诊断
+    // v6.4.2-3：渲染层皮肤状态回报（applied/degraded/error）→ pet.log + 失败系统通知
     ipcMain.handle('pet:skinStatus', (_e, status: any) => {
       plog('skinStatus: ' + JSON.stringify(status));
+      if (status && status.ok === false) {
+        try {
+          new Notification({ title: '桌宠皮肤加载失败', body: String(status.reason || status.phase || '未知原因') }).show();
+        } catch { /* 通知失败不影响 */ }
+      }
     });
   }
 

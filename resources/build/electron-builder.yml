@@ -18,6 +18,8 @@ extraResources:
     to: pet/themes/dshpet
   - from: resources/task-events.json
     to: task-events.json
+  - from: resources/bg-upload
+    to: bg-upload
 win:
   target: [nsis]
   signAndEditExecutable: false

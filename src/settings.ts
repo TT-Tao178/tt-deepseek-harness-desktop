@@ -11,6 +11,7 @@ export interface AppSettings {
   closeBehavior: CloseBehavior;
   pet?: { enabled?: boolean; pos?: { x: number; y: number }; theme?: string; alwaysOnTop?: boolean };
   kernel?: { channel?: string; mirror?: string };
+  background?: { path?: string; opacity?: number };
 }
 
 const DEFAULTS: AppSettings = { closeBehavior: 'ask' };
@@ -22,7 +23,10 @@ export function readAppSettings(): AppSettings {
     const b = j?.closeBehavior;
     // pet.enabled 默认 true（归一化，防止旧配置缺字段）
     const pet = { enabled: true, ...(j?.pet ?? {}) };
-    return { ...DEFAULTS, ...j, closeBehavior: VALID.includes(b) ? b : DEFAULTS.closeBehavior, pet };
+    // background.opacity 默认 1（归一化）
+    const background = { ...(j?.background ?? {}) };
+    if (typeof background.opacity !== 'number') background.opacity = 1;
+    return { ...DEFAULTS, ...j, closeBehavior: VALID.includes(b) ? b : DEFAULTS.closeBehavior, pet, background };
   } catch {
     return { ...DEFAULTS };
   }
@@ -59,4 +63,12 @@ export function setPetEnabled(v: boolean): void {
 export function setPetTheme(id: string): void {
   const s = readAppSettings();
   writeAppSettings({ ...s, pet: { ...(s.pet ?? {}), enabled: s.pet?.enabled ?? true, theme: id } });
+}
+
+/** v6.4.2-4：背景设置（合并写；path 传 undefined 表示清除）。 */
+export function setBackground(patch: { path?: string; opacity?: number }): void {
+  const s = readAppSettings();
+  const merged = { ...(s.background ?? {}), ...patch };
+  if (typeof merged.opacity !== 'number') merged.opacity = 1;
+  writeAppSettings({ ...s, background: merged });
 }

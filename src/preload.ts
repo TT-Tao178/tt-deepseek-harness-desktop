@@ -21,6 +21,12 @@ contextBridge.exposeInMainWorld('dshDesktop', {
     getEnabled: invoke('pet:getEnabled'),
     setEnabled: (v: boolean) => ipcRenderer.invoke('pet:setEnabled', v),
   },
+  bg: {
+    get: invoke('bg:get'),
+    setOpacity: (v: number) => ipcRenderer.invoke('bg:setOpacity', v),
+    upload: invoke('bg:upload'),
+    clear: invoke('bg:clear'),
+  },
   notify: (title: string, body?: string) => ipcRenderer.invoke('notify', title, body),
   dialog: {
     openDirectory: (opts?: unknown) => ipcRenderer.invoke('dialog:openDirectory', opts),
