@@ -10,7 +10,7 @@
   },
   "packageManager": "pnpm@9.0.0",
   "scripts": {
-    "build": "node scripts/patch-frontend.cjs && tsc -p tsconfig.json && node scripts/copy-pet-ui.cjs",
+    "build": "tsc -p tsconfig.json && node scripts/copy-pet-ui.cjs",
     "dev": "pnpm build && electron .",
     "start": "electron .",
     "test": "node --test --experimental-test-isolation=none \"tests/*.test.cjs\"",
