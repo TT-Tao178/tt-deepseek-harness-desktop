@@ -1,7 +1,17 @@
 import { BrowserWindow, dialog, app } from 'electron';
 import path from 'node:path';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { appState } from './state';
 import { readAppSettings, setCloseBehavior } from './settings';
+
+/** v6.5.2-3：关闭行为诊断日志（写 main.log，排"直接退出不生效"类问题）。 */
+function logClose(msg: string): void {
+  try {
+    const p = path.join(app.getPath('userData'), 'logs', 'main.log');
+    mkdirSync(path.dirname(p), { recursive: true });
+    appendFileSync(p, `[${new Date().toISOString()}] [close] ${msg}\n`);
+  } catch { /* 忽略 */ }
+}
 
 export async function createWindow(baseUrl: string): Promise<BrowserWindow> {
   const win = new BrowserWindow({
@@ -16,12 +26,19 @@ export async function createWindow(baseUrl: string): Promise<BrowserWindow> {
   });
   win.once('ready-to-show', () => win.show());
   win.on('close', (e) => {
+    const cb = readAppSettings().closeBehavior;
+    logClose('close fired: behavior=' + cb + ' isQuitting=' + appState.isQuitting);
     if (appState.isQuitting) return;                 // 真正退出时放行
     e.preventDefault();
-    const { closeBehavior } = readAppSettings();
-    if (closeBehavior === 'tray') { win.hide(); return; }
-    if (closeBehavior === 'quit') { app.quit(); return; }
+    if (cb === 'tray') { win.hide(); logClose('-> hide to tray'); return; }
+    if (cb === 'quit') {
+      appState.isQuitting = true;                    // 前置置位，杜绝竞态
+      logClose('-> app.quit()');
+      app.quit();
+      return;
+    }
     // 'ask'：弹窗询问（可选记住选择）
+    logClose('-> ask dialog');
     void (async () => {
       const r = await dialog.showMessageBox(win, {
         type: 'question',

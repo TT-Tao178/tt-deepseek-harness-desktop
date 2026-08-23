@@ -84,18 +84,27 @@ window.__ModuleLoader__.load({
             try { bi = window.getComputedStyle(el).backgroundImage; } catch (e2) { /* 忽略 */ }
             if (!bi || bi.indexOf('gradient') === -1) continue;
             if (bi.indexOf('url(') !== -1) continue;   // 含图片背景的渐变不碰
-            if (shouldClearGradient(el)) { el.style.backgroundImage = 'none'; }
+            // v6.5.2-3：类名含 fade 的装饰性褪色（如 sidebar 底部 qDHVXG_fade 白色渐变）一律清除
+            var cls = typeof el.className === 'string' ? el.className : '';
+            if (cls.indexOf('fade') !== -1 || shouldClearGradient(el)) { el.style.backgroundImage = 'none'; }
             else if (diag.length < 6) {
               var r = el.getBoundingClientRect();
-              diag.push('id=' + (el.id || '-') + ' cls=' + (typeof el.className === 'string' ? el.className.slice(0, 50) : '-') + ' size=' + Math.round(r.width) + 'x' + Math.round(r.height) + ' pos=(' + Math.round(r.left) + ',' + Math.round(r.top) + ') bg=' + bi.slice(0, 60));
+              diag.push('id=' + (el.id || '-') + ' cls=' + cls.slice(0, 50) + ' size=' + Math.round(r.width) + 'x' + Math.round(r.height) + ' pos=(' + Math.round(r.left) + ',' + Math.round(r.top) + ') bg=' + bi.slice(0, 60));
             }
           }
-          if (diag.length > 0) console.log('[tt-bg] 未清除的渐变元素: ' + diag.join(' | '));
+          if (diag.length > 0) {
+            var now = Date.now();
+            if (diagTimer === null || now - diagTimer > 5000) {   // 诊断节流：5 秒最多一条
+              diagTimer = now;
+              console.log('[tt-bg] 未清除的渐变元素: ' + diag.join(' | '));
+            }
+          }
         } catch (e) { /* 忽略 */ }
       }
 
       // ---- 观察者：DSH 重渲染/主题切换后背景容器可能恢复 → 防抖重清 ----
       var clearTimer = null;
+      var diagTimer = null;
       function scheduleClear() {
         clearTimeout(clearTimer);
         clearTimer = setTimeout(clearPageBg, 500);
