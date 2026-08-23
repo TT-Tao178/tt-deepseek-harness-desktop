@@ -29,6 +29,21 @@ test('v6.4.2-4：脚本含背景上传/透明度/背景层', () => {
   assert.ok(s.includes('16:9'), '应含比例建议说明');
 });
 
+test('v6.5.1-S1：背景层插入 DSH 根容器内部（方案 B）', () => {
+  const s = inject.UI_PANEL_SCRIPT;
+  assert.ok(s.includes('#root,#app,.dsw-app,[data-dsw-root]'), '应探测 DSH 根容器');
+  assert.ok(s.includes('insertBefore'), '应把背景层插入根容器第一个子节点');
+  assert.ok(s.includes('mountBg'), '应有挂载函数');
+  assert.ok(!s.includes('clearRootBg'), '应已删除"清根容器背景"hack');
+  assert.ok(!s.includes('html,body{background:transparent'), '应已删除 html/body 透明 hack');
+});
+
+test('v6.5.1-S2：面板含当前背景缩略图', () => {
+  const s = inject.UI_PANEL_SCRIPT;
+  assert.ok(s.includes('tt-bg-thumb'), '应含缩略图元素');
+  assert.ok(s.includes('thumb'), '应消费 bg:get 返回的 thumb');
+});
+
 test('脚本不含未转义的外层模板占位符（防注入串扰）', () => {
   const s = inject.UI_PANEL_SCRIPT;
   assert.ok(!s.includes('${'), '不应包含 ${（会与外层模板字面量冲突）');

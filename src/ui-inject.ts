@@ -33,58 +33,61 @@ export const UI_PANEL_SCRIPT = `
     '.tt-ui-row{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}' +
     '.tt-ui-hint{font-size:11px;color:#7a828e;margin-top:8px}' +
     '.tt-ui-range{width:120px}' +
-    '#tt-bg{position:fixed;inset:0;z-index:-1;pointer-events:none;background-size:cover;background-position:center;background-repeat:no-repeat;opacity:1;transition:opacity .3s}';
+    '#tt-bg{position:fixed;inset:0;z-index:-1;pointer-events:none;background-size:cover;background-position:center;background-repeat:no-repeat;opacity:1;transition:opacity .3s}' +
+    '#tt-bg-thumb{display:none;max-width:100%;max-height:90px;border-radius:6px;border:1px solid rgba(255,255,255,.15);margin:6px 0;object-fit:cover}';
 
   var style = document.createElement('style');
   style.textContent = CSS;
   document.head.appendChild(style);
 
-  // ---- 背景层（内容之下；ttbg:// 协议绕过页面 CSP 加载本地图片）----
-  var bgTransparent = document.createElement('style');
-  bgTransparent.textContent = 'html,body{background:transparent!important}';
-  document.head.appendChild(bgTransparent);
+  // ---- 背景层（v6.5.1-S1 方案 B：插入 DSH 根容器内部第一个子节点）----
+  // 层叠：root 自身背景色 → bgDiv（负 z、首子节点）→ 后续内容 → "白色之上、文字之下"天然成立
   var bgDiv = document.createElement('div');
   bgDiv.id = 'tt-bg';
-  document.body.appendChild(bgDiv);
-  // 清除 DSH 根容器（body 直接子元素）的不透明背景，露出背景层（v6.4.2-7）
-  function clearRootBg() {
+  var thumbImg = document.createElement('img');
+  thumbImg.id = 'tt-bg-thumb';
+  thumbImg.alt = '当前背景预览';
+  var mountBgTimer = null;
+  function findBgRoot() {
+    var q = document.querySelector('#root,#app,.dsw-app,[data-dsw-root]');
+    if (q) return q;
+    var best = null, bestArea = 0;
     var kids = document.body.children;
     for (var i = 0; i < kids.length; i++) {
       var el = kids[i];
       if (el === btn || el === panel || el === bgDiv || el.tagName === 'STYLE' || el.tagName === 'SCRIPT') continue;
-      var bg = window.getComputedStyle(el).backgroundColor;
-      if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') el.style.backgroundColor = 'transparent';
+      var r = el.getBoundingClientRect();
+      var area = r.width * r.height;
+      if (area > bestArea) { bestArea = area; best = el; }
     }
+    return best || document.body;
   }
-  var rootBgTimer = null;
-  function scheduleClearRootBg() {
-    clearTimeout(rootBgTimer);
-    rootBgTimer = setTimeout(clearRootBg, 120);   // 防抖：React 频繁重渲染时限制频率
+  function mountBg() {
+    if (bgDiv.parentNode) return;                       // 已挂载
+    var root = findBgRoot();
+    if (root && root !== document.body) root.insertBefore(bgDiv, root.firstChild);
+    else document.body.appendChild(bgDiv);
   }
   if (window.MutationObserver) {
-    new MutationObserver(scheduleClearRootBg).observe(document.body, {
-      childList: true, subtree: false, attributes: true, attributeFilter: ['style', 'class'],
-    });
+    new MutationObserver(function () {
+      if (!bgDiv.parentNode) {                          // root 重建/背景层被移除 → 自愈重挂（防抖）
+        clearTimeout(mountBgTimer);
+        mountBgTimer = setTimeout(mountBg, 120);
+      }
+    }).observe(document.body, { childList: true, subtree: false });
   }
   window.__ttBg = {
     update: function (st) {
       if (!st) return;
+      mountBg();
       if (st.path) {
         bgDiv.style.backgroundImage = "url('ttbg://bg')";
-        // 双保险：html 级背景（在 body/内容之下），根容器背景透明后可见
-        document.documentElement.style.backgroundImage = "url('ttbg://bg')";
-        document.documentElement.style.backgroundSize = 'cover';
-        document.documentElement.style.backgroundPosition = 'center';
-        document.documentElement.style.backgroundAttachment = 'fixed';
+        if (st.thumb) { thumbImg.src = st.thumb; thumbImg.style.display = ''; }
       } else {
         bgDiv.style.backgroundImage = '';
-        document.documentElement.style.backgroundImage = '';
-        document.documentElement.style.backgroundSize = '';
-        document.documentElement.style.backgroundPosition = '';
-        document.documentElement.style.backgroundAttachment = '';
+        thumbImg.style.display = 'none';
       }
       bgDiv.style.opacity = st.opacity != null ? st.opacity : 1;
-      clearRootBg();
     }
   };
 
@@ -199,6 +202,7 @@ export const UI_PANEL_SCRIPT = `
   panel.appendChild(pHint);
   panel.appendChild(bSec);
   panel.appendChild(bRow);
+  panel.appendChild(thumbImg);   // v6.5.1-S2：当前背景缩略图
   panel.appendChild(opRow);
   panel.appendChild(bHint);
   panel.appendChild(stRow);
