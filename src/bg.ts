@@ -61,6 +61,13 @@ function applyToWindow(winGetter: () => BrowserWindow | null): void {
   win.webContents.executeJavaScript('window.__ttBg && window.__ttBg.update(' + JSON.stringify(st) + ')').catch(() => {});
 }
 
+/** 只推送透明度（避免全量回推导致的滑块拖动闪烁）。 */
+function applyOpacity(winGetter: () => BrowserWindow | null, o: number): void {
+  const win = winGetter();
+  if (!win || win.isDestroyed()) return;
+  win.webContents.executeJavaScript('window.__ttBg && window.__ttBg.update({opacity: ' + o + '})').catch(() => {});
+}
+
 export function registerBackground(winGetter: () => BrowserWindow | null): void {
   // ttbg://bg → 当前背景图片文件流（带日志，确认请求是否到达）
   protocol.handle('ttbg', (req) => {
@@ -78,7 +85,7 @@ export function registerBackground(winGetter: () => BrowserWindow | null): void 
   ipcMain.handle('bg:setOpacity', (_e, v: number) => {
     const o = Math.min(1, Math.max(0.05, Number(v) || 1));
     setBackground({ opacity: o });
-    applyToWindow(winGetter);
+    applyOpacity(winGetter, o);   // v6.5.2-3：只推透明度，不全量回推（防闪烁）
     blog('bg:setOpacity -> ' + o);
   });
   ipcMain.handle('bg:clear', () => {

@@ -128,9 +128,13 @@ export const UI_PANEL_SCRIPT = `
   slider.min = 10; slider.max = 100; slider.value = 100;
   slider.className = 'tt-ui-range';
   slider.addEventListener('input', function () {
+    // 拖动中：纯本地即时（不触发 IPC，避免主进程全量回推导致闪烁）
     var v = Number(slider.value) / 100;
-    if (window.__ttBg) window.__ttBg.update({ opacity: v });   // 即时（tt-bg 插件显示层）
-    if (api.bg && api.bg.setOpacity) api.bg.setOpacity(v).catch(function () {});   // 持久化
+    if (window.__ttBg) window.__ttBg.update({ opacity: v });
+  });
+  slider.addEventListener('change', function () {
+    // 松手：才持久化（一次 IPC；主进程只回推 opacity）
+    if (api.bg && api.bg.setOpacity) api.bg.setOpacity(Number(slider.value) / 100).catch(function () {});
   });
   opRow.appendChild(opLabel);
   opRow.appendChild(slider);
