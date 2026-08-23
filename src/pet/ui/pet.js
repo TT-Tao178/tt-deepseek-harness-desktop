@@ -1,8 +1,9 @@
 // v6.4.2 桌宠渲染进程逻辑
 // - css 渲染器（内置兜底，v6.1 行为保留）
-// - video 渲染器（dsh-pet 素材）：隐藏 <video> 解码 + <canvas> 逐帧绘制——
-//   修复「透明窗口 + <video> 直接显示」在 Windows 上不渲染的问题（v6.4.2-2）
-//   动画链/权重/朝向/漫游逻辑与 dsh-pet 一致（纯逻辑在 chain.js / PetChain）
+// - video 渲染器（dsh-pet 素材）：双缓冲 <video> 直接显示 + 权重动画链 + 朝向镜像 + 桌面漫游
+//   （v6.4.2-6：回到与 dsh-pet 完全一致的播放形态——曾改为 canvas 逐帧绘制，
+//    在用户多屏环境下出现"无报错但不可见"，已回退）
+// 素材通道：本地 HTTP 素材服务器（127.0.0.1 随机端口），与 dsh-pet 同通道
 // 失败兜底：视频连续 3 次加载失败 → 自动降级 css 渲染器（绝不白屏/全透明）
 (function () {
   const petEl = document.getElementById('pet');
@@ -16,16 +17,15 @@
   let skin = null;                       // { renderer, manifest, baseUrl }
   let vstage = null;
   const V = {                            // video 引擎状态
-    elA: null, elB: null, front: 0, gen: 0, ft: null, failCount: 0, drawRaf: null,
+    elA: null, elB: null, front: 0, gen: 0, ft: null, failCount: 0,
     current: '', overlay: false, facing: 'left',
     moveBusy: false, moveToken: 0, moveRaf: null, pendingMove: null,
   };
-  const VW = 320, VH = 180;              // 舞台画布（16:9，与 640×360 素材同比例）
 
   const VCSS = '' +
     '#vstage{position:absolute;left:0;right:0;bottom:0;width:320px;height:180px;display:none;pointer-events:none;overflow:hidden}' +
-    '#vstage video{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none}' +
-    '#vstage canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}';
+    '#vstage video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;opacity:0;transition:opacity .18s ease;pointer-events:none}' +
+    '#vstage video.is-front{opacity:1}';
 
   const TEXTS = {
     idle: ['摸鱼中…', '盯——', '需要帮忙吗？'],
@@ -57,7 +57,7 @@
     showBubble(em ? text + ' ' + em : text);
   }
 
-  // ================= video 引擎（隐藏 video 解码 + canvas 逐帧绘制） =================
+  // ================= video 引擎（双缓冲 <video> 直接显示，与 dsh-pet 一致） =================
   function playVideo(name, once) {
     if (!name) return;
     const next = V.front === 0 ? V.elB : V.elA;
@@ -70,15 +70,20 @@
     next.onloadeddata = () => {
       if (gen !== V.gen) return;
       const old = V.front === 0 ? V.elA : V.elB;
-      V.front = 1 - V.front;                 // canvas 绘制读取新的 front 视频
+      next.classList.add('is-front');        // 双缓冲交叉淡入
+      if (old && old !== next) old.classList.remove('is-front');
+      V.front = 1 - V.front;
+      next.style.transform = V.facing === 'right' ? 'scaleX(-1)' : '';
       next.play().catch(() => {});
+      petApi.reportSkin({ ok: true, phase: 'loadeddata', renderer: 'video', name });
       if (V.pendingMove) startMoveDrive(next);
     };
+    next.onplaying = () => { if (gen === V.gen) petApi.reportSkin({ ok: true, phase: 'playing', renderer: 'video', name }); };
     next.onerror = () => {
       if (gen !== V.gen) return;
       V.failCount++;
-      console.error('[pet] video error: ' + name + ' fails=' + V.failCount);
-      petApi.reportSkin({ ok: false, phase: 'load', renderer: 'video', name, fails: V.failCount });
+      console.error('[pet] video error: ' + name + ' code=' + (next.error ? next.error.code : '?') + ' fails=' + V.failCount);
+      petApi.reportSkin({ ok: false, phase: 'load', renderer: 'video', name, code: next.error ? next.error.code : undefined, fails: V.failCount });
       if (V.failCount >= 3) { degradeToCss('视频素材加载失败，已切换到默认皮肤'); return; }
       setTimeout(() => { if (gen === V.gen) onAnimEnded(); }, 1500);   // A2：失败跳过
     };
@@ -98,20 +103,6 @@
     petApi.reportSkin({ ok: false, phase: 'degrade', renderer: 'video', fails: V.failCount });
     showBubble(msg);
     loadSkin({ renderer: 'css' });
-  }
-  function drawLoop() {
-    const cv = vstage && vstage.querySelector('canvas.cv');
-    if (!cv || vstage.style.display === 'none') { V.drawRaf = null; return; }
-    const ctx = cv.getContext('2d');
-    const v = V.front === 0 ? V.elA : V.elB;
-    if (v && v.readyState >= 2) {
-      ctx.clearRect(0, 0, VW, VH);
-      ctx.save();
-      if (V.facing === 'right') { ctx.translate(VW, 0); ctx.scale(-1, 1); }   // 朝向镜像（canvas 级，透明窗口可靠）
-      ctx.drawImage(v, 0, 0, VW, VH);
-      ctx.restore();
-    }
-    V.drawRaf = requestAnimationFrame(drawLoop);
   }
   function onAnimEnded() {
     if (V.overlay) { V.overlay = false; V.pendingMove = null; pickNext(); return; }
@@ -215,7 +206,7 @@
           const style = document.createElement('style');
           style.textContent = VCSS;
           document.head.appendChild(style);
-          vstage.innerHTML = '<video class="a"></video><video class="b"></video><canvas class="cv" width="320" height="180"></canvas>';
+          vstage.innerHTML = '<video class="a"></video><video class="b"></video>';
           document.body.appendChild(vstage);
         }
         vstage.style.display = '';
@@ -223,7 +214,6 @@
         V.elB = vstage.querySelector('video.b');
         V.front = 0; V.overlay = false; V.current = ''; V.facing = 'left'; V.failCount = 0;
         bubble.style.top = (window.innerHeight - 180 - 44) + 'px';   // 气泡移到视频舞台上方
-        if (!V.drawRaf) requestAnimationFrame(drawLoop);
         pickNext();
       } else {
         if (vstage) vstage.style.display = 'none';
