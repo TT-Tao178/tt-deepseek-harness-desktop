@@ -1,7 +1,8 @@
 import { app, BrowserWindow, ipcMain, screen } from 'electron';
 import path from 'node:path';
-import { readAppSettings, updatePetPos } from '../settings';
+import { readAppSettings, updatePetPos, setPetTheme } from '../settings';
 import { appendFileSync, mkdirSync } from 'node:fs';
+import { scanSkins, resolveSkin, activeSkinId, skinAssetUrl, SkinInfo } from './skins';
 
 const petLog = () => path.join(app.getPath('userData'), 'logs', 'pet.log');
 function plog(msg: string) {
@@ -64,7 +65,7 @@ export class PetManager {
       }, 3000);
     });
     this.win.webContents.on('did-fail-load', (_e, code, desc, url, isMain) => { plog('did-fail-load: ' + code + ' ' + desc + ' url=' + url + ' main=' + isMain); });
-    this.win.webContents.on('did-finish-load', () => plog('did-finish-load'));
+    this.win.webContents.on('did-finish-load', () => { plog('did-finish-load'); this.pushSkin(); });
     this.win.on('moved', () => {
       if (!this.win) return;
       const [x, y] = this.win.getPosition();
@@ -129,4 +130,39 @@ export class PetManager {
     this.win?.webContents.send('pet:event', { type: ev, payload });
   }
   get bounds() { return this.win?.getBounds() ?? null; }
+
+  // ================= v6.4.2 桌宠皮肤（目录即皮肤；dshpet 为默认） =================
+  private builtinSkinDirs(): string[] {
+    const base = app.isPackaged
+      ? path.join(process.resourcesPath, 'pet', 'themes')
+      : path.join(app.getAppPath(), 'resources', 'pet', 'themes');
+    return [base];
+  }
+  private userSkinDir(): string {
+    return path.join(app.getPath('userData'), 'themes');
+  }
+  activeSkinId(): string {
+    return activeSkinId(this.builtinSkinDirs(), this.userSkinDir(), readAppSettings().pet?.theme);
+  }
+  listSkins(): SkinInfo[] {
+    return scanSkins(this.builtinSkinDirs(), this.userSkinDir());
+  }
+  setSkin(id: string): void {
+    const info = resolveSkin(this.builtinSkinDirs(), this.userSkinDir(), id);
+    if (!info) { plog('setSkin: unknown skin ' + id); return; }
+    setPetTheme(id);
+    this.pushSkin();
+  }
+  /** 把当前活动皮肤推给渲染层（渲染层据此构建 css/video 引擎）。 */
+  private pushSkin(): void {
+    try {
+      const info = resolveSkin(this.builtinSkinDirs(), this.userSkinDir(), this.activeSkinId());
+      if (!info) return;
+      this.win?.webContents.send('pet:event', {
+        type: 'skin',
+        payload: { renderer: info.manifest.renderer, manifest: info.manifest, baseUrl: skinAssetUrl(info.dir) },
+      });
+      plog('pushSkin: ' + info.id + ' renderer=' + info.manifest.renderer);
+    } catch (e) { plog('pushSkin error: ' + String(e)); }
+  }
 }

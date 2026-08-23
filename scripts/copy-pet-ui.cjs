@@ -4,7 +4,7 @@ const path = require('node:path');
 const src = path.resolve('src/pet/ui');
 const dst = path.resolve('dist/pet');
 fs.mkdirSync(dst, { recursive: true });
-for (const f of ['index.html', 'pet.css', 'pet.js']) {
+for (const f of ['index.html', 'pet.css', 'pet.js', 'chain.js']) {
   fs.copyFileSync(path.join(src, f), path.join(dst, f));
 }
 console.log('pet UI copied to dist/pet');

@@ -54,3 +54,9 @@ export function setPetEnabled(v: boolean): void {
   const s = readAppSettings();
   writeAppSettings({ ...s, pet: { ...(s.pet ?? {}), enabled: v } });
 }
+
+/** v6.4.2：桌宠皮肤切换（合并写，防覆盖其他字段）。 */
+export function setPetTheme(id: string): void {
+  const s = readAppSettings();
+  writeAppSettings({ ...s, pet: { ...(s.pet ?? {}), enabled: s.pet?.enabled ?? true, theme: id } });
+}
