@@ -1,7 +1,9 @@
 // v6.4.2 桌宠渲染进程逻辑
 // - css 渲染器（内置兜底，v6.1 行为保留）
-// - video 渲染器（dsh-pet 素材：双缓冲 <video> + 权重动画链 + 朝向镜像 + 桌面漫游）
-// 状态规则与 src/pet/state-machine.ts 保持一致；纯选择/几何逻辑在 chain.js（PetChain）。
+// - video 渲染器（dsh-pet 素材）：隐藏 <video> 解码 + <canvas> 逐帧绘制——
+//   修复「透明窗口 + <video> 直接显示」在 Windows 上不渲染的问题（v6.4.2-2）
+//   动画链/权重/朝向/漫游逻辑与 dsh-pet 一致（纯逻辑在 chain.js / PetChain）
+// 失败兜底：视频连续 3 次加载失败 → 自动降级 css 渲染器（绝不白屏/全透明）
 (function () {
   const petEl = document.getElementById('pet');
   const bubble = document.getElementById('bubble');
@@ -12,18 +14,18 @@
 
   // ================= 皮肤/渲染器状态 =================
   let skin = null;                       // { renderer, manifest, baseUrl }
-  let vstage = null;                     // video 舞台（动态创建）
+  let vstage = null;
   const V = {                            // video 引擎状态
-    elA: null, elB: null, front: 0, gen: 0, ft: null,
+    elA: null, elB: null, front: 0, gen: 0, ft: null, failCount: 0, drawRaf: null,
     current: '', overlay: false, facing: 'left',
     moveBusy: false, moveToken: 0, moveRaf: null, pendingMove: null,
   };
+  const VW = 320, VH = 180;              // 舞台画布（16:9，与 640×360 素材同比例）
 
-  // video 舞台样式（动态注入，避免改 pet.css）
   const VCSS = '' +
-    '#vstage{position:absolute;left:0;right:0;bottom:0;height:180px;display:none;pointer-events:none;overflow:hidden}' +
-    '#vstage video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;opacity:0;transition:opacity .18s ease;pointer-events:none}' +
-    '#vstage video.is-front{opacity:1}';
+    '#vstage{position:absolute;left:0;right:0;bottom:0;width:320px;height:180px;display:none;pointer-events:none;overflow:hidden}' +
+    '#vstage video{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none}' +
+    '#vstage canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}';
 
   const TEXTS = {
     idle: ['摸鱼中…', '盯——', '需要帮忙吗？'],
@@ -55,7 +57,7 @@
     showBubble(em ? text + ' ' + em : text);
   }
 
-  // ================= video 引擎（dsh-pet 动画链移植） =================
+  // ================= video 引擎（隐藏 video 解码 + canvas 逐帧绘制） =================
   function playVideo(name, once) {
     if (!name) return;
     const next = V.front === 0 ? V.elB : V.elA;
@@ -68,18 +70,44 @@
     next.onloadeddata = () => {
       if (gen !== V.gen) return;
       const old = V.front === 0 ? V.elA : V.elB;
-      next.classList.add('is-front');
-      if (old && old !== next) old.classList.remove('is-front');
-      V.front = 1 - V.front;
-      next.style.transform = V.facing === 'right' ? 'scaleX(-1)' : '';
+      V.front = 1 - V.front;                 // canvas 绘制读取新的 front 视频
       next.play().catch(() => {});
       if (V.pendingMove) startMoveDrive(next);
     };
-    next.onerror = () => { if (gen === V.gen) setTimeout(() => { if (gen === V.gen) onAnimEnded(); }, 1500); };  // A2：素材失败跳过
+    next.onerror = () => {
+      if (gen !== V.gen) return;
+      V.failCount++;
+      if (V.failCount >= 3) { degradeToCss('视频素材加载失败，已切换到默认皮肤'); return; }
+      setTimeout(() => { if (gen === V.gen) onAnimEnded(); }, 1500);   // A2：失败跳过
+    };
     next.onended = () => { if (gen === V.gen) onAnimEnded(); };
     next.load();
     clearTimeout(V.ft);
-    V.ft = setTimeout(() => { if (gen === V.gen && V.current === name) onAnimEnded(); }, 10000);   // A2：10s 超时强切
+    V.ft = setTimeout(() => {                 // A2：15s 超时兜底
+      if (gen !== V.gen || V.current !== name) return;
+      if (next.readyState >= 2 && next.error === null) { onAnimEnded(); return; }
+      V.failCount++;
+      if (V.failCount >= 3) { degradeToCss('视频素材加载失败，已切换到默认皮肤'); return; }
+      onAnimEnded();
+    }, 15000);
+  }
+  function degradeToCss(msg) {
+    showBubble(msg);
+    loadSkin({ renderer: 'css' });
+  }
+  function drawLoop() {
+    const cv = vstage && vstage.querySelector('canvas.cv');
+    if (!cv || vstage.style.display === 'none') { V.drawRaf = null; return; }
+    const ctx = cv.getContext('2d');
+    const v = V.front === 0 ? V.elA : V.elB;
+    if (v && v.readyState >= 2) {
+      ctx.clearRect(0, 0, VW, VH);
+      ctx.save();
+      if (V.facing === 'right') { ctx.translate(VW, 0); ctx.scale(-1, 1); }   // 朝向镜像（canvas 级，透明窗口可靠）
+      ctx.drawImage(v, 0, 0, VW, VH);
+      ctx.restore();
+    }
+    V.drawRaf = requestAnimationFrame(drawLoop);
   }
   function onAnimEnded() {
     if (V.overlay) { V.overlay = false; V.pendingMove = null; pickNext(); return; }
@@ -98,7 +126,7 @@
     else if (k === 'move') { if (!tryMove()) { const act = PetChain.pickCategoryAction(a.categories || [], a.idle || [], V.facing, V.current); playVideo(act.name, false); } }
     else { const act = PetChain.pickCategoryAction(a.categories || [], a.idle || [], V.facing, V.current); playVideo(act.name, false); }
   }
-  // 桌面漫游：窗口级位移（dsh-pet 页面内漫游 → 我们的窗口移动；屏幕 workArea 由主进程提供）
+  // 桌面漫游：窗口级位移（屏幕 workArea 由主进程提供）
   function tryMove() {
     if (V.moveBusy || V.pendingMove) return true;
     const m = skin.manifest.animations.moves;
@@ -155,7 +183,7 @@
     V.moveToken++; V.moveBusy = false; V.pendingMove = null;
     if (V.moveRaf !== null) { cancelAnimationFrame(V.moveRaf); V.moveRaf = null; }
   }
-  // 覆盖态 → 视频池映射（状态机事件；无对应素材则只气泡）
+  // 覆盖态 → 视频池映射（无对应素材则只气泡）
   function videoOverlay(name) {
     const a = (skin.manifest.animations) || {};
     let target = null;
@@ -182,18 +210,20 @@
         const style = document.createElement('style');
         style.textContent = VCSS;
         document.head.appendChild(style);
-        vstage.innerHTML = '<video class="a"></video><video class="b"></video>';
+        vstage.innerHTML = '<video class="a"></video><video class="b"></video><canvas class="cv" width="320" height="180"></canvas>';
         document.body.appendChild(vstage);
       }
       vstage.style.display = '';
       V.elA = vstage.querySelector('video.a');
       V.elB = vstage.querySelector('video.b');
-      V.front = 0; V.overlay = false; V.current = ''; V.facing = 'left';
+      V.front = 0; V.overlay = false; V.current = ''; V.facing = 'left'; V.failCount = 0;
       bubble.style.top = (window.innerHeight - 180 - 44) + 'px';   // 气泡移到视频舞台上方
+      if (!V.drawRaf) requestAnimationFrame(drawLoop);
       pickNext();
     } else {
       if (vstage) vstage.style.display = 'none';
       bubble.style.top = '';
+      petEl.style.display = '';
       petEl.className = 'pet pet-idle';
     }
   }
@@ -248,7 +278,7 @@
   document.addEventListener('pointermove', updateClickThrough, true);
   window.addEventListener('blur', () => petApi.setClickThrough(false));
 
-  // ================= 视线跟随（css 渲染器专属；视频素材不适用） =================
+  // ================= 视线跟随（css 渲染器专属） =================
   document.addEventListener('mousemove', (e) => {
     if (skin && skin.renderer === 'video') return;
     const r = petEl.getBoundingClientRect();

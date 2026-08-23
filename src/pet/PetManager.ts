@@ -65,6 +65,10 @@ export class PetManager {
       }, 3000);
     });
     this.win.webContents.on('did-fail-load', (_e, code, desc, url, isMain) => { plog('did-fail-load: ' + code + ' ' + desc + ' url=' + url + ' main=' + isMain); });
+    // v6.4.2-2：渲染层 console 回传 pet.log（诊断视频/皮肤问题）
+    this.win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+      plog('renderer[' + level + '] ' + message + ' @' + sourceId + ':' + line);
+    });
     this.win.webContents.on('did-finish-load', () => { plog('did-finish-load'); this.pushSkin(); });
     this.win.on('moved', () => {
       if (!this.win) return;
