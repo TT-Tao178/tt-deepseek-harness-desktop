@@ -1,6 +1,6 @@
 {
   "name": "tt-deepseek-harness-desktop",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "description": "Desktop wrapper for DeepSeek Harness (unofficial)",
   "author": "TT DeepSeek Harness Desktop contributors",
