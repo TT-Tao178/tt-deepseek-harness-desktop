@@ -12,7 +12,9 @@ embed-resource = "3"
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-ico", "image-png"] }
 tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = "0.9"
 shell-core = { path = "../../crates/shell-core" }
 kernel-process = { path = "../../crates/kernel-process" }
