@@ -1,0 +1,59 @@
+{
+  "expressions": {
+    "default": "roxy0.png",
+    "happy": "roxy1.png",
+    "surprised": "roxy2.png",
+    "sleepy": "roxy3.png",
+    "angry": "roxy4.png"
+  },
+  "reactions": {
+    "turnCost": [
+      { "min": 5, "expr": "surprised" },
+      { "min": 0.01, "expr": "happy" },
+      { "min": 0, "expr": "angry" }
+    ],
+    "balanceLow": { "threshold": 10, "line": "余额不多了。……自己看着办。" }
+  },
+  "prefs": {
+    "scale": 1.0,
+    "corner": "bottom-right",
+    "marginX": 16,
+    "marginY": 16,
+    "mirrorOnLeft": false,
+    "animationOn": true,
+    "linesOn": true,
+    "turnCostOn": true,
+    "turnCostCloseMs": 5000
+  },
+  "behavior": {
+    "breatheMs": 2400,
+    "flickEverySec": [10, 20],
+    "flickChance": 0.2,
+    "flickMs": 1200,
+    "sleepyEverySec": [25, 35],
+    "sleepyChance": 0.3,
+    "sleepyMs": 5000,
+    "refreshMs": 60000,
+    "bubbleMs": 5000,
+    "taskPollMs": 1000
+  },
+  "speech": {
+    "toggles": {
+      "randomLines": true,
+      "turnCost": true,
+      "balanceLow": true
+    },
+    "customLines": []
+  },
+  "lines": [
+    { "group": "kuudere", "weight": 18, "items": ["……", "嗯。", "哦。", "……随你。", "有事说事。", "看完记得关。"] },
+    { "group": "tsundere", "weight": 14, "items": ["不是特意在等你，只是刚好在这里。", "才、才不是在关心你写了多少。", "你写代码的样子……也不算太难看。", "哼，勉强夸你一句。"] },
+    { "group": "balance", "weight": 10, "items": ["余额，自己看。", "今天的用量，还行。", "烧钱速度，比我预想的快。", "……嗯，够用。"] },
+    { "group": "task", "weight": 8, "items": ["任务做完了？我早就知道了。", "在忙，别烦。", "……嗯，继续。", "别指望我帮你写。"] }
+  ],
+  "reportLines": {
+    "taskDone": "……%title%，做完了。",
+    "taskFailed": "%title%……失败了。自己看日志。",
+    "taskAdded": "记下了：%title%。"
+  }
+}
