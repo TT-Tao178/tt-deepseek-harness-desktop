@@ -1,4 +1,5 @@
 mod supervisor;
+pub mod window;
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -299,7 +300,7 @@ fn spawn_poll_thread(
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 已有实例时聚焦主窗口。
             if let Some(window) = app.get_webview_window("main") {
@@ -308,11 +309,19 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             setup_kernel(app);
+            window::init(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![service_get_status, service_restart])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| match event {
+        // 退出前统一停内核（ask/quit 两条关闭路径都会走到这里；stop 幂等）。
+        tauri::RunEvent::Exit => window::stop_supervisor(app_handle),
+        _ => {}
+    });
 }
