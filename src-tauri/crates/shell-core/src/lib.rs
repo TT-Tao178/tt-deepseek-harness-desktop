@@ -1,3 +1,3 @@
-pub fn placeholder() -> u32 {
-    42
-}
+pub mod paths;
+pub mod plugins;
+pub mod settings;
