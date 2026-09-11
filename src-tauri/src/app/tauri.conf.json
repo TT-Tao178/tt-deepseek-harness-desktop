@@ -38,6 +38,9 @@
       "nsis": {
         "installMode": "currentUser",
         "installerHooks": "./installer-hooks.nsh"
+      },
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
       }
     }
   }
