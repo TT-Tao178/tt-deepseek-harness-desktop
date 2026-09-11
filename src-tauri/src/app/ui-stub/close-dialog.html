@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>关闭应用</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; user-select: none; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei", sans-serif;
+    margin: 0; background: #fbfbfd; color: #1b1f27; font-size: 14px;
+    display: flex; flex-direction: column; padding: 22px 24px 18px;
+    overflow: hidden;
+  }
+  .head { display: flex; align-items: center; gap: 14px; }
+  .head img { width: 44px; height: 44px; border-radius: 10px; flex: none; }
+  .head .t { font-size: 17px; font-weight: 600; line-height: 1.3; }
+  .head .d { color: #6b7280; font-size: 12.5px; margin-top: 3px; line-height: 1.45; }
+  .choices { display: flex; gap: 10px; margin: 20px 0 14px; }
+  button {
+    font: inherit; flex: 1; padding: 10px 8px; border-radius: 8px;
+    border: 1px solid #d4d9e0; background: #fff; color: #1b1f27;
+    cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  }
+  button .bt { font-weight: 600; font-size: 13.5px; }
+  button .bd { font-size: 11.5px; color: #6b7280; }
+  button:hover { background: #f2f5f9; }
+  button:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+  button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+  button.primary:hover { background: #1d4fd8; }
+  button.primary .bd { color: #d6e3ff; }
+  button.quit .bd { color: #b42318; }
+  button.quit { border-color: #ecc9c4; }
+  button.quit:hover { background: #fdf3f2; }
+  .foot { display: flex; align-items: center; justify-content: space-between; margin-top: auto; }
+  label.remember { display: flex; align-items: center; gap: 7px; color: #4b5563; font-size: 12.5px; cursor: pointer; }
+  label.remember input { width: 15px; height: 15px; accent-color: #2563eb; cursor: pointer; }
+  .cancel-link { background: none; border: none; color: #6b7280; font-size: 12.5px; padding: 4px 6px; cursor: pointer; flex: none; }
+  .cancel-link:hover { color: #1b1f27; text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <img src="app-icon.png" alt="">
+    <div>
+      <div class="t">要关闭应用吗？</div>
+      <div class="d">退出到托盘后窗口会收起、会话保持运行；关闭程序将完全退出。</div>
+    </div>
+  </div>
+
+  <div class="choices">
+    <button id="btn-tray" class="primary" title="Enter">
+      <span class="bt">退出到托盘</span>
+      <span class="bd">保持后台运行</span>
+    </button>
+    <button id="btn-quit" class="quit">
+      <span class="bt">关闭程序</span>
+      <span class="bd">完全退出</span>
+    </button>
+    <button id="btn-cancel">
+      <span class="bt">取消</span>
+      <span class="bd">返回窗口</span>
+    </button>
+  </div>
+
+  <div class="foot">
+    <label class="remember">
+      <input type="checkbox" id="remember">
+      不再弹出询问，按本次选择执行
+    </label>
+    <button id="btn-cancel-link" class="cancel-link">取消 (Esc)</button>
+  </div>
+<script>
+  const { core } = window.__TAURI__;
+  const remember = () => document.getElementById('remember').checked;
+  const act = (a) => core.invoke('close_dialog_action', { action: a, remember: remember() });
+  document.getElementById('btn-tray').onclick = () => act('tray');
+  document.getElementById('btn-quit').onclick = () => act('quit');
+  const cancel = () => act('cancel');
+  document.getElementById('btn-cancel').onclick = cancel;
+  document.getElementById('btn-cancel-link').onclick = cancel;
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') cancel();
+    if (e.key === 'Enter') act('tray');
+  });
+</script>
+</body>
+</html>
