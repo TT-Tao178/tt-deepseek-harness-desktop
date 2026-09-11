@@ -31,7 +31,8 @@
     "resources": {
       "../../../kernel/": "kernel/",
       "../../../plugins/": "plugins/",
-      "../../../resources/installer/": "resources/installer/"
+      "../../../resources/installer/": "resources/installer/",
+      "dlls/WebView2Loader.dll": "WebView2Loader.dll"
     },
     "windows": {
       "nsis": {
