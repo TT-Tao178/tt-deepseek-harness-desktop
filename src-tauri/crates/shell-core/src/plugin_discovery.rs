@@ -140,7 +140,8 @@ fn scan_one_dir(dir: &Path, source: PluginSource) -> Vec<PluginInfo> {
 }
 
 /// 检查单个插件目录，产出 PluginInfo（目录缺 package.json 时返回 None）。
-fn inspect_plugin_dir(dir: &Path, source: PluginSource) -> Option<PluginInfo> {
+/// pub：供导入流程复用同一校验（先验源目录，复制后再验目标）。
+pub fn inspect_plugin_dir(dir: &Path, source: PluginSource) -> Option<PluginInfo> {
     let pkg_path = dir.join("package.json");
     if !pkg_path.is_file() {
         return None;

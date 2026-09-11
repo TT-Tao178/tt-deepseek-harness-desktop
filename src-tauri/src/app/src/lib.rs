@@ -1,5 +1,6 @@
 mod kernel_manager;
 mod menu;
+mod plugin_manager;
 pub mod settings_ui;
 mod supervisor;
 pub mod window;
@@ -143,16 +144,62 @@ fn discover_all_plugins(app_root: Option<&Path>, app_data: &Path) -> Vec<shell_c
     shell_core::plugin_discovery::discover_plugins(bundled_ref, &app_data.join("plugins"))
 }
 
-/// 按 settings 计算 --patch 参数：valid ∧ enabled 的插件按发现顺序拼接。
-fn compute_patch_args(
+/// 挂载计划（v8 机制）：
+/// - **全部 valid 插件都参与挂载**（junction + --patch，顺序 = 发现顺序）；
+/// - 禁用的插件通过内核「用户 patch 层」的 `disabled: true` 条目实现
+///   （官方机制：后应用层同 id 一票否决；路由/组合里不再出现）。
+/// 返回（--patch 参数序列， 需禁用的 insert id 列表）。
+fn compute_mount_plan(
     app_root: Option<&Path>,
     app_data: &Path,
     settings: &shell_core::settings::AppSettings,
-) -> Vec<String> {
+) -> (Vec<String>, Vec<String>) {
     let plugins = discover_all_plugins(app_root, app_data);
-    shell_core::plugin_discovery::resolve_enabled_patch_args(&plugins, |p| {
-        shell_core::settings::is_plugin_enabled(settings, &p.id, p.source == shell_core::plugin_discovery::PluginSource::Bundled)
-    })
+    let mut patch_args = Vec::new();
+    let mut disabled_ids = Vec::new();
+    for p in plugins.iter().filter(|p| p.valid) {
+        patch_args.push("--patch".to_string());
+        patch_args.push(p.patch_path.to_string_lossy().into_owned());
+        let enabled = shell_core::settings::is_plugin_enabled(
+            settings,
+            &p.id,
+            p.source == shell_core::plugin_discovery::PluginSource::Bundled,
+        );
+        if !enabled {
+            let mut ids = shell_core::plugins::parse_insert_ids(&p.patch_path);
+            if ids.is_empty() {
+                ids.push(p.id.clone()); // 降级：patch 解析失败时按模块名禁用
+            }
+            disabled_ids.extend(ids);
+        }
+    }
+    (patch_args, disabled_ids)
+}
+
+/// 应用插件挂载：junction（valid 全集，幂等）+ 用户 patch 层（禁用条目）。
+/// 启动前与每次插件开关重启前调用；失败只记日志不 panic。
+fn apply_plugin_mount(
+    app_root: Option<&Path>,
+    app_data: &Path,
+    settings: &shell_core::settings::AppSettings,
+    log: &dyn Fn(String),
+) {
+    let plugins = discover_all_plugins(app_root, app_data);
+    let links = shell_core::plugin_discovery::junction_targets(&plugins);
+    let home_nm = app_data.join("dsh-home").join("node_modules");
+    let _ = std::fs::create_dir_all(&home_nm);
+    for err in shell_core::plugins::ensure_junctions(&home_nm, &links) {
+        log(err);
+    }
+    let (_, disabled_ids) = compute_mount_plan(app_root, app_data, settings);
+    let user_patch = app_data
+        .join("dsh-home")
+        .join("profiles")
+        .join("web")
+        .join("cordis.patch.yml");
+    if let Err(e) = shell_core::plugins::write_user_patch_layer(&user_patch, &disabled_ids) {
+        log(format!("user patch layer: {e}"));
+    }
 }
 
 /// 追加一行到日志文件（失败静默，不 panic）。
@@ -253,41 +300,24 @@ fn setup_kernel(app: &tauri::App) {
         ),
     );
 
-    // --- b. 插件发现 + junction：dsh-home/node_modules/<id> <- 插件真身 ---
+    // --- b. 插件发现 + 挂载（junction 全集 + 用户 patch 层禁用条目）---
     let app_root = app_root_from_exe();
     if app_root.is_none() {
         append_log(&main_log, "[setup] app root not found; skipping junctions and plugin patches");
     }
     let settings_path = app_data.join("settings.json");
     let settings = shell_core::settings::read_settings(&settings_path);
-    let home_node_modules = dsh_home.join("node_modules");
-    if let Err(e) = std::fs::create_dir_all(&home_node_modules) {
-        append_log(&main_log, &format!("[setup] create home/node_modules failed: {e}"));
-    }
-    let plugins = discover_all_plugins(app_root.as_deref(), &app_data);
-    for p in plugins.iter().filter(|p| !p.valid) {
-        append_log(
-            &main_log,
-            &format!(
-                "[setup] invalid plugin {} ({}): {}",
-                p.id,
-                if p.source == shell_core::plugin_discovery::PluginSource::Bundled { "bundled" } else { "user" },
-                p.invalid_reason.as_deref().unwrap_or("?")
-            ),
-        );
-    }
-    let links = shell_core::plugin_discovery::junction_targets(&plugins);
-    if links.is_empty() {
-        append_log(&main_log, "[setup] no valid plugins found; skipping junctions");
-    } else {
-        for err in shell_core::plugins::ensure_junctions(&home_node_modules, &links) {
-            append_log(&main_log, &format!("[setup] junction: {err}"));
-        }
-    }
+    apply_plugin_mount(
+        app_root.as_deref(),
+        &app_data,
+        &settings,
+        &|msg| append_log(&main_log, &format!("[setup] {msg}")),
+    );
 
     // --- c. --patch 参数 ---
-    let patch_args = compute_patch_args(app_root.as_deref(), &app_data, &settings);
+    let (patch_args, disabled_ids) = compute_mount_plan(app_root.as_deref(), &app_data, &settings);
     append_log(&main_log, &format!("[setup] patch args: {patch_args:?}"));
+    append_log(&main_log, &format!("[setup] disabled plugin ids: {disabled_ids:?}"));
 
     // --- d. supervisor（真实 ops）存入 tauri State ---
     let Some(kernel_dir) = app_root.as_deref().and_then(locate_kernel_dir) else {
@@ -445,7 +475,11 @@ pub fn run() {
             kernel_manager::kernel_check_updates,
             kernel_manager::kernel_install,
             kernel_manager::kernel_cancel,
-            kernel_manager::kernel_rollback
+            kernel_manager::kernel_rollback,
+            plugin_manager::plugin_list,
+            plugin_manager::plugin_set_enabled,
+            plugin_manager::plugin_import,
+            plugin_manager::plugin_remove
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
