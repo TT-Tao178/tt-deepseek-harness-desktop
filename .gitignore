@@ -12,4 +12,3 @@ secrets/
 .dsh-home-user/
 mock-user/
 src-tauri/target/
-src-tauri/src/app/ui-stub/

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>设置 - TT DeepSeek Harness Desktop</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; background: #f4f6f8; color: #1c2430; font-size: 13px; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 20px 22px 40px; }
+  h1 { font-size: 17px; margin: 6px 0 18px; }
+  h2 { font-size: 13px; margin: 26px 0 8px; color: #5b6572; text-transform: none; letter-spacing: .3px; }
+  .card { background: #fff; border: 1px solid #e2e6ea; border-radius: 10px; padding: 4px 14px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f0f2f4; }
+  .row:last-child { border-bottom: none; }
+  .row .label { color: #333; }
+  .row .sub { color: #8b939e; font-size: 12px; margin-top: 2px; }
+  button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid #c8cfd8; background: #fff; cursor: pointer; }
+  button:hover { background: #f0f4f8; }
+  button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+  button.primary:hover { background: #1d4fd8; }
+  button.danger { color: #b42318; border-color: #e2b2ac; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  select { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid #c8cfd8; background: #fff; }
+  .status { color: #5b6572; font-size: 12px; }
+  .status.ok { color: #157f3d; }
+  .status.err { color: #b42318; }
+  .progress { height: 8px; background: #e6e9ed; border-radius: 4px; overflow: hidden; margin: 10px 0 4px; display: none; }
+  .progress > div { height: 100%; width: 0%; background: #2563eb; transition: width .3s; }
+  .vlist { margin: 8px 0; max-height: 260px; overflow: auto; border: 1px solid #e2e6ea; border-radius: 8px; }
+  .vitem { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid #f0f2f4; cursor: pointer; }
+  .vitem:hover { background: #f7f9fb; }
+  .vitem.sel { background: #eaf1ff; }
+  .vitem .tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: #eef1f4; color: #5b6572; }
+  .vitem .tag.cur { background: #157f3d22; color: #157f3d; }
+  .vitem .tag.new { background: #2563eb22; color: #2563eb; }
+  .vitem .tag.bad { background: #b4231822; color: #b42318; }
+  .pswitch { transform: scale(1.15); }
+  .prow { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #f0f2f4; }
+  .prow:last-of-type { border-bottom: none; }
+  .prow .pid { font-weight: 600; }
+  .prow .pmeta { color: #8b939e; font-size: 12px; }
+  .prow .pbad { color: #b42318; font-size: 12px; }
+  .prow .spacer { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; background: #eef1f4; color: #5b6572; margin-right: 6px; }
+  .hidden { display: none; }
+  code { background: #f0f2f4; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>设置</h1>
+
+  <h2>内核管理</h2>
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="label">当前内核版本 <span class="badge" id="k-version">读取中…</span></div>
+        <div class="sub">内核 = 官方 @deepseek-ai/dsh；更新来自所选 npm 源</div>
+      </div>
+      <div>
+        <select id="k-registry" title="更新源">
+          <option value="npmmirror">国内镜像 (npmmirror)</option>
+          <option value="npmjs">官方源 (npmjs.org)</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div class="label">检查更新</div>
+      <div>
+        <button id="btn-check">检查更新</button>
+        <button id="btn-cancel" class="hidden">取消</button>
+      </div>
+    </div>
+    <div class="row" id="k-install-row">
+      <div>
+        <div class="label">安装</div>
+        <div class="sub" id="k-hint">下载约 80~120MB，安装期间当前会话不受影响；自检通过才会切换，失败自动回滚。</div>
+      </div>
+      <button id="btn-install" class="primary" disabled>下载并安装</button>
+    </div>
+    <div class="progress" id="k-progress"><div id="k-progress-bar"></div></div>
+    <div class="status" id="k-status"></div>
+    <div class="vlist hidden" id="k-versions"></div>
+    <div class="row">
+      <div>
+        <div class="label">回滚</div>
+        <div class="sub" id="k-backups">备份：读取中…</div>
+      </div>
+      <button id="btn-rollback" disabled>回滚到上一版本</button>
+    </div>
+  </div>
+
+  <h2>插件管理</h2>
+  <div class="card">
+    <div id="p-list"><div class="row"><span class="status">读取中…</span></div></div>
+    <div class="row">
+      <div>
+        <div class="label">本地插件</div>
+        <div class="sub">选择包含 package.json 与 cordis.patch.yml 的插件目录；导入后默认禁用，手动开启生效（内核会重启）。</div>
+      </div>
+      <button id="btn-plugin-import">导入本地插件…</button>
+    </div>
+    <div class="status" id="p-status"></div>
+  </div>
+
+  <h2>通用</h2>
+  <div class="card">
+    <div class="row">
+      <div class="label">关闭窗口时</div>
+      <select id="close-behavior">
+        <option value="ask">每次询问</option>
+        <option value="tray">最小化到托盘</option>
+        <option value="quit">直接退出</option>
+      </select>
+    </div>
+    <div class="row">
+      <div>
+        <div class="label">Roxy 桌宠</div>
+        <div class="sub">页面右下角宠物挂件（切换会自动重启内核，约 3~10 秒）</div>
+      </div>
+      <input type="checkbox" id="roxy-toggle">
+    </div>
+    <div class="row">
+      <div>
+        <div class="label">内核服务</div>
+        <div class="status" id="svc-status">读取中…</div>
+      </div>
+      <button id="btn-restart">重启内核</button>
+    </div>
+  </div>
+</div>
+
+<script src="./settings.js"></script>
+</body>
+</html>
