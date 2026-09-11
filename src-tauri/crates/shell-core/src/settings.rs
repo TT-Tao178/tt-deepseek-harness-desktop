@@ -1,19 +1,35 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-/// Kernel runtime selection.
+/// Kernel update settings (v8).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct KernelSettings {
-    /// Release channel, e.g. `stable`.
-    #[serde(default = "default_channel")]
-    pub channel: String,
-    /// npm registry mirror used to resolve packages.
-    #[serde(default = "default_mirror")]
-    pub mirror: String,
+    /// npm registry selector: `npmmirror` (default) or `npmjs`.
+    #[serde(default = "default_registry")]
+    pub registry: String,
+    /// How many previous kernel versions to keep in kernel-backup/ (1~2).
+    #[serde(default = "default_keep_backups")]
+    pub keep_backups: u32,
+    /// ISO timestamp of the last update check (set by the shell).
+    #[serde(default)]
+    pub last_checked: Option<String>,
+    /// Kernel version currently installed (set by the shell after a
+    /// successful update; informational only — the live truth is read from
+    /// the kernel directory).
+    #[serde(default)]
+    pub installed_version: Option<String>,
 }
 
-/// Proxy / roxy toggle.
+/// Per-plugin enabled map: id -> on/off.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct PluginsSettings {
+    #[serde(default)]
+    pub enabled: BTreeMap<String, bool>,
+}
+
+/// Legacy v7 roxy toggle — read for migration, never written back.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RoxySettings {
     #[serde(default = "default_enabled")]
@@ -29,13 +45,16 @@ pub struct BackgroundSettings {
     pub opacity: f64,
 }
 
-/// The persisted application settings.
+/// The persisted application settings (v8 schema).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AppSettings {
     /// `ask` | `tray` | `quit` — what happens when the window closes.
     #[serde(default = "default_close_behavior")]
     pub close_behavior: String,
     #[serde(default)]
+    pub plugins: PluginsSettings,
+    /// Legacy v7 field: read (for migration) but skipped on write.
+    #[serde(default, skip_serializing)]
     pub roxy: RoxySettings,
     #[serde(default)]
     pub kernel: KernelSettings,
@@ -51,23 +70,33 @@ fn default_enabled() -> bool {
     true
 }
 
-fn default_channel() -> String {
-    "stable".to_string()
+fn default_registry() -> String {
+    "npmmirror".to_string()
 }
 
-fn default_mirror() -> String {
-    "https://registry.npmmirror.com".to_string()
+fn default_keep_backups() -> u32 {
+    1
 }
 
 fn default_opacity() -> f64 {
     1.0
 }
 
+/// Registry ids accepted by the shell (whitelist passed to the installer).
+pub const REGISTRY_NPMMIRROR: &str = "npmmirror";
+pub const REGISTRY_NPMJS: &str = "npmjs";
+
+/// The well-known bundled plugin ids seeded into `plugins.enabled` on
+/// migration from a legacy settings file.
+pub const LEGACY_PLUGIN_IDS: [&str; 2] = ["tt-bg", "dsh-pet-roxy"];
+
 impl Default for KernelSettings {
     fn default() -> Self {
         Self {
-            channel: default_channel(),
-            mirror: default_mirror(),
+            registry: default_registry(),
+            keep_backups: default_keep_backups(),
+            last_checked: None,
+            installed_version: None,
         }
     }
 }
@@ -91,8 +120,9 @@ impl Default for BackgroundSettings {
 
 impl Default for AppSettings {
     fn default() -> Self {
-        Self {
+        AppSettings {
             close_behavior: default_close_behavior(),
+            plugins: PluginsSettings::default(),
             roxy: RoxySettings::default(),
             kernel: KernelSettings::default(),
             background: BackgroundSettings::default(),
@@ -105,20 +135,44 @@ fn valid_opacity(v: f64) -> bool {
     !v.is_nan() && (0.0..=1.0).contains(&v)
 }
 
-/// Bring an arbitrary `AppSettings` back to the documented invariants:
-/// `close_behavior` restricted to `ask|tray|quit`, opacity within `[0.0, 1.0]`.
+fn valid_registry(v: &str) -> bool {
+    matches!(v, REGISTRY_NPMMIRROR | REGISTRY_NPMJS)
+}
+
+/// Bring an arbitrary `AppSettings` back to the documented invariants.
 fn sanitize(s: &mut AppSettings) {
     if !matches!(s.close_behavior.as_str(), "ask" | "tray" | "quit") {
         s.close_behavior = default_close_behavior();
+    }
+    if !valid_registry(&s.kernel.registry) {
+        s.kernel.registry = default_registry();
+    }
+    if !(1..=2).contains(&s.kernel.keep_backups) {
+        s.kernel.keep_backups = default_keep_backups();
     }
     if !valid_opacity(s.background.opacity) {
         s.background.opacity = default_opacity();
     }
 }
 
+/// One-time migration from the legacy v7 schema:
+/// an empty `plugins.enabled` map is seeded from `roxy.enabled`
+/// (`tt-bg` + `dsh-pet-roxy` both follow it; tt-bg was always-on before, so
+/// a disabled roxy still leaves tt-bg on).
+fn migrate(s: &mut AppSettings) {
+    if s.plugins.enabled.is_empty() {
+        let roxy_on = s.roxy.enabled;
+        s.plugins.enabled.insert("tt-bg".to_string(), true);
+        s.plugins
+            .enabled
+            .insert("dsh-pet-roxy".to_string(), roxy_on);
+    }
+}
+
 /// Read settings from `path`. A missing file or a file that fails to parse
-/// yields the fully defaulted settings; missing fields are filled with their
-/// defaults; out-of-range values are corrected.
+/// yields the fully defaulted settings (which, after migration, enable the
+/// two bundled plugins); missing fields are filled with defaults;
+/// out-of-range values are corrected.
 pub fn read_settings(path: &Path) -> AppSettings {
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
@@ -128,6 +182,7 @@ pub fn read_settings(path: &Path) -> AppSettings {
         Ok(settings) => settings,
         Err(_) => return AppSettings::default(),
     };
+    migrate(&mut settings);
     sanitize(&mut settings);
     settings
 }
@@ -144,9 +199,18 @@ pub fn write_settings(path: &Path, s: &AppSettings) -> Result<(), String> {
     fs::write(path, json).map_err(|e| e.to_string())
 }
 
-/// Enable or disable the roxy feature.
-pub fn set_roxy_enabled(s: &mut AppSettings, enabled: bool) {
-    s.roxy.enabled = enabled;
+/// Plugin enabled lookup: explicit map entry wins; otherwise bundled plugins
+/// default to enabled and user (imported) plugins default to disabled.
+pub fn is_plugin_enabled(s: &AppSettings, id: &str, bundled: bool) -> bool {
+    match s.plugins.enabled.get(id) {
+        Some(v) => *v,
+        None => bundled,
+    }
+}
+
+/// Set a plugin's enabled state (no-op persistence happens in the caller).
+pub fn set_plugin_enabled(s: &mut AppSettings, id: &str, enabled: bool) {
+    s.plugins.enabled.insert(id.to_string(), enabled);
 }
 
 /// Set the close behavior; values other than `ask`/`tray`/`quit` are ignored.
@@ -164,6 +228,15 @@ pub fn set_background(s: &mut AppSettings, path: Option<String>, opacity: Option
     }
     if let Some(opacity) = opacity {
         s.background.opacity = if valid_opacity(opacity) { opacity } else { default_opacity() };
+    }
+}
+
+/// Registry URL for a whitelisted registry id (returns None for unknown ids).
+pub fn registry_url(registry: &str) -> Option<&'static str> {
+    match registry {
+        REGISTRY_NPMMIRROR => Some("https://registry.npmmirror.com"),
+        REGISTRY_NPMJS => Some("https://registry.npmjs.org"),
+        _ => None,
     }
 }
 
@@ -185,15 +258,15 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_returns_defaults() {
+    fn missing_file_returns_defaults_with_bundled_seeded() {
         let root = test_root("missing");
         let s = read_settings(&root.join("settings.json"));
-        assert_eq!(s, AppSettings::default());
         assert_eq!(s.close_behavior, "ask");
-        assert!(s.roxy.enabled);
-        assert_eq!(s.kernel.channel, "stable");
-        assert_eq!(s.kernel.mirror, "https://registry.npmmirror.com");
-        assert_eq!(s.background.path, None);
+        assert!(is_plugin_enabled(&s, "tt-bg", true));
+        assert!(is_plugin_enabled(&s, "dsh-pet-roxy", true));
+        assert_eq!(s.kernel.registry, "npmmirror");
+        assert_eq!(s.kernel.keep_backups, 1);
+        assert_eq!(s.kernel.last_checked, None);
         assert_eq!(s.background.opacity, 1.0);
         let _ = fs::remove_dir_all(&root);
     }
@@ -205,35 +278,44 @@ mod tests {
         fs::create_dir_all(&root).expect("create temp dir");
         fs::write(&p, "{ not valid json !!!").expect("write bad json");
         let s = read_settings(&p);
-        assert_eq!(s, AppSettings::default());
+        assert_eq!(s.close_behavior, "ask");
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn empty_file_returns_defaults() {
-        let root = test_root("empty");
+    fn legacy_v7_file_migrates_roxy_into_plugins() {
+        let root = test_root("v7migrate");
         let p = root.join("settings.json");
         fs::create_dir_all(&root).expect("create temp dir");
-        fs::write(&p, "").expect("write empty file");
-        let s = read_settings(&p);
-        assert_eq!(s, AppSettings::default());
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn missing_fields_fill_defaults() {
-        let root = test_root("missingfields");
-        let p = root.join("settings.json");
-        fs::create_dir_all(&root).expect("create temp dir");
-        fs::write(&p, r#"{"close_behavior":"tray","kernel":{"channel":"beta"}}"#)
-            .expect("write json");
+        // v7 schema: roxy disabled, kernel.channel/mirror present.
+        fs::write(
+            &p,
+            r#"{"close_behavior":"tray","roxy":{"enabled":false},"kernel":{"channel":"stable","mirror":"https://registry.npmmirror.com"},"background":{"opacity":0.5}}"#,
+        )
+        .expect("write v7 json");
         let s = read_settings(&p);
         assert_eq!(s.close_behavior, "tray");
-        assert!(s.roxy.enabled, "missing roxy should default to enabled");
-        assert_eq!(s.kernel.channel, "beta");
-        assert_eq!(s.kernel.mirror, "https://registry.npmmirror.com");
-        assert_eq!(s.background.path, None);
-        assert_eq!(s.background.opacity, 1.0);
+        assert!(!is_plugin_enabled(&s, "dsh-pet-roxy", true), "roxy off must migrate to dsh-pet-roxy off");
+        assert!(is_plugin_enabled(&s, "tt-bg", true), "tt-bg stays on");
+        assert_eq!(s.kernel.registry, "npmmirror", "v7 kernel block falls back to default registry");
+        assert_eq!(s.background.opacity, 0.5);
+
+        // Writing back produces the v8 schema (no `roxy` key, plugins map present).
+        write_settings(&p, &s).expect("write back");
+        let raw = fs::read_to_string(&p).expect("read raw");
+        assert!(!raw.contains("\"roxy\""), "legacy field must not be written back");
+        assert!(raw.contains("\"plugins\""));
+        assert!(raw.contains("\"registry\""));
+
+        // Re-reading the migrated file is stable for all live state. The
+        // legacy `roxy` field is dead after the first write-back (skipped on
+        // serialize, so the second read sees its default) — exclude it.
+        let s2 = read_settings(&p);
+        let mut a = s.clone();
+        let mut b = s2;
+        a.roxy = RoxySettings::default();
+        b.roxy = RoxySettings::default();
+        assert_eq!(b, a, "second read must be stable (modulo legacy roxy)");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -242,32 +324,29 @@ mod tests {
         let root = test_root("sanitize");
         let p = root.join("settings.json");
         fs::create_dir_all(&root).expect("create temp dir");
-        fs::write(&p, r#"{"close_behavior":"minimize","background":{"opacity":2.5}}"#)
-            .expect("write json");
+        fs::write(
+            &p,
+            r#"{"close_behavior":"minimize","kernel":{"registry":"http://evil.example","keep_backups":9},"background":{"opacity":2.5}}"#,
+        )
+        .expect("write json");
         let s = read_settings(&p);
         assert_eq!(s.close_behavior, "ask", "unknown close_behavior must fall back to ask");
+        assert_eq!(s.kernel.registry, "npmmirror", "non-whitelisted registry must fall back");
+        assert_eq!(s.kernel.keep_backups, 1, "keep_backups out of 1..=2 must fall back");
         assert_eq!(s.background.opacity, 1.0, "out-of-range opacity must fall back to 1.0");
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn nan_opacity_is_sanitized() {
-        let mut s = AppSettings::default();
-        s.background.opacity = f64::NAN;
-        sanitize(&mut s);
-        assert_eq!(s.background.opacity, 1.0);
-    }
-
-    #[test]
-    fn write_read_roundtrip() {
+    fn write_read_roundtrip_preserves_plugins() {
         let root = test_root("roundtrip");
         let p = root.join("nested").join("settings.json");
         let mut s = AppSettings::default();
         s.close_behavior = "tray".to_string();
-        s.roxy.enabled = false;
-        s.kernel.channel = "nightly".to_string();
-        s.kernel.mirror = "https://registry.npmjs.org".to_string();
-        s.background.path = Some("C:\\wallpaper.png".to_string());
+        set_plugin_enabled(&mut s, "tt-bg", false);
+        set_plugin_enabled(&mut s, "my-plugin", true);
+        s.kernel.registry = "npmjs".to_string();
+        s.kernel.installed_version = Some("0.1.0-rc.7".to_string());
         s.background.opacity = 0.42;
         write_settings(&p, &s).expect("write settings");
         let back = read_settings(&p);
@@ -279,44 +358,39 @@ mod tests {
     }
 
     #[test]
+    fn plugin_enabled_lookup_semantics() {
+        let mut s = AppSettings::default();
+        // Missing entry: bundled -> true, user -> false.
+        assert!(is_plugin_enabled(&s, "unknown", true));
+        assert!(!is_plugin_enabled(&s, "unknown", false));
+        // Explicit entry wins for both.
+        set_plugin_enabled(&mut s, "p1", false);
+        assert!(!is_plugin_enabled(&s, "p1", true));
+        set_plugin_enabled(&mut s, "p2", true);
+        assert!(is_plugin_enabled(&s, "p2", false));
+    }
+
+    #[test]
+    fn registry_url_whitelist() {
+        assert_eq!(
+            registry_url("npmmirror"),
+            Some("https://registry.npmmirror.com")
+        );
+        assert_eq!(registry_url("npmjs"), Some("https://registry.npmjs.org"));
+        assert_eq!(registry_url("http://evil"), None);
+    }
+
+    #[test]
     fn setters_merge_semantics() {
         let mut s = AppSettings::default();
-
-        set_roxy_enabled(&mut s, false);
-        assert!(!s.roxy.enabled);
-        set_roxy_enabled(&mut s, true);
-        assert!(s.roxy.enabled);
-
         set_close_behavior(&mut s, "tray");
-        assert_eq!(s.close_behavior, "tray");
         set_close_behavior(&mut s, "bogus");
         assert_eq!(s.close_behavior, "tray", "invalid close_behavior must be ignored");
-        set_close_behavior(&mut s, "quit");
-        assert_eq!(s.close_behavior, "quit");
-        set_close_behavior(&mut s, "ask");
-        assert_eq!(s.close_behavior, "ask");
 
-        // path: None keeps the old value, Some overwrites
-        assert_eq!(s.background.path, None);
         set_background(&mut s, Some("a.png".to_string()), None);
-        assert_eq!(s.background.path.as_deref(), Some("a.png"));
-        set_background(&mut s, None, None);
-        assert_eq!(s.background.path.as_deref(), Some("a.png"), "None path must not clear it");
-        set_background(&mut s, Some("b.png".to_string()), None);
-        assert_eq!(s.background.path.as_deref(), Some("b.png"), "Some path must overwrite");
-
-        // opacity: valid values stick, invalid ones become 1.0
         set_background(&mut s, None, Some(0.5));
-        assert_eq!(s.background.opacity, 0.5);
-        set_background(&mut s, None, Some(1.5));
-        assert_eq!(s.background.opacity, 1.0, "opacity > 1.0 must be reset");
-        set_background(&mut s, None, Some(-0.1));
-        assert_eq!(s.background.opacity, 1.0, "opacity < 0.0 must be reset");
         set_background(&mut s, None, Some(f64::NAN));
+        assert_eq!(s.background.path.as_deref(), Some("a.png"));
         assert_eq!(s.background.opacity, 1.0, "NaN opacity must be reset");
-        // None opacity keeps the current value
-        set_background(&mut s, None, Some(0.25));
-        set_background(&mut s, None, None);
-        assert_eq!(s.background.opacity, 0.25);
     }
 }

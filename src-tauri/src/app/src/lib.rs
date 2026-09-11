@@ -18,6 +18,7 @@ use supervisor::{HealthResult, KernelOps, KernelState, Supervisor};
 pub struct KernelRuntime {
     pub spec_slot: Arc<Mutex<kernel_process::spawn_spec::KernelSpec>>,
     pub supervisor: Arc<Mutex<Supervisor>>,
+    pub app_data: PathBuf,
     pub settings_path: PathBuf,
     pub app_root: Option<PathBuf>,
     pub port: u16,
@@ -25,9 +26,11 @@ pub struct KernelRuntime {
 }
 
 impl KernelRuntime {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         spec_slot: Arc<Mutex<kernel_process::spawn_spec::KernelSpec>>,
         supervisor: Arc<Mutex<Supervisor>>,
+        app_data: PathBuf,
         settings_path: PathBuf,
         app_root: Option<PathBuf>,
         port: u16,
@@ -35,11 +38,17 @@ impl KernelRuntime {
         KernelRuntime {
             spec_slot,
             supervisor,
+            app_data,
             settings_path,
             app_root,
             port,
             generation: AtomicU64::new(0),
         }
+    }
+
+    /// 用户导入插件的目录（`<userData>/plugins/`）。
+    pub fn user_plugins_dir(&self) -> PathBuf {
+        self.app_data.join("plugins")
     }
 }
 
@@ -125,23 +134,24 @@ fn locate_kernel_dir(app_root: &Path) -> Option<PathBuf> {
     None
 }
 
-/// 按 settings 计算 --patch 参数（tt-bg 恒在，roxy 按 settings.roxy.enabled）。
-/// app_root 为 None（未找到根）时返回空参数。
-fn compute_patch_args(app_root: Option<&Path>, settings: &shell_core::settings::AppSettings) -> Vec<String> {
-    let Some(root) = app_root else {
-        return Vec::new();
-    };
-    let res_path = root.join("resources");
-    let mut patch_args: Vec<String> = Vec::new();
-    let mut push_patch = |name: &str, enabled: bool| {
-        if let Some(src) = shell_core::plugins::find_plugin_src(root, &res_path, name) {
-            let path = shell_core::plugins::plugin_patch_path(&src);
-            patch_args.extend(shell_core::plugins::resolve_patch_args(&path, enabled));
-        }
-    };
-    push_patch("tt-bg", true);
-    push_patch("dsh-pet-roxy", settings.roxy.enabled);
-    patch_args
+/// 插件发现：内置目录（app_root/plugins）+ 用户目录（userData/plugins）。
+/// app_root 为 None 时只扫用户目录。
+fn discover_all_plugins(app_root: Option<&Path>, app_data: &Path) -> Vec<shell_core::plugin_discovery::PluginInfo> {
+    let bundled = app_root.map(|r| r.join("plugins"));
+    let bundled_ref = bundled.as_deref().unwrap_or(Path::new(""));
+    shell_core::plugin_discovery::discover_plugins(bundled_ref, &app_data.join("plugins"))
+}
+
+/// 按 settings 计算 --patch 参数：valid ∧ enabled 的插件按发现顺序拼接。
+fn compute_patch_args(
+    app_root: Option<&Path>,
+    app_data: &Path,
+    settings: &shell_core::settings::AppSettings,
+) -> Vec<String> {
+    let plugins = discover_all_plugins(app_root, app_data);
+    shell_core::plugin_discovery::resolve_enabled_patch_args(&plugins, |p| {
+        shell_core::settings::is_plugin_enabled(settings, &p.id, p.source == shell_core::plugin_discovery::PluginSource::Bundled)
+    })
 }
 
 /// 追加一行到日志文件（失败静默，不 panic）。
@@ -224,37 +234,40 @@ fn setup_kernel(app: &tauri::App) {
         ),
     );
 
-    // --- b. junction：<app_data>/dsh-home/node_modules <- plugins 源码 ---
-    let home_node_modules = dsh_home.join("node_modules");
-    if let Err(e) = std::fs::create_dir_all(&home_node_modules) {
-        append_log(&main_log, &format!("[setup] create home/node_modules failed: {e}"));
-    }
+    // --- b. 插件发现 + junction：dsh-home/node_modules/<id> <- 插件真身 ---
     let app_root = app_root_from_exe();
     if app_root.is_none() {
         append_log(&main_log, "[setup] app root not found; skipping junctions and plugin patches");
     }
     let settings_path = app_data.join("settings.json");
     let settings = shell_core::settings::read_settings(&settings_path);
-
-    if let Some(root) = &app_root {
-        let res_path = root.join("resources");
-        let mut links: Vec<(String, PathBuf)> = Vec::new();
-        for name in ["tt-bg", "dsh-pet-roxy"] {
-            if let Some(src) = shell_core::plugins::find_plugin_src(root, &res_path, name) {
-                links.push((name.to_string(), src));
-            }
-        }
-        if links.is_empty() {
-            append_log(&main_log, "[setup] no plugin sources found; skipping junctions");
-        } else {
-            for err in shell_core::plugins::ensure_junctions(&home_node_modules, &links) {
-                append_log(&main_log, &format!("[setup] junction: {err}"));
-            }
+    let home_node_modules = dsh_home.join("node_modules");
+    if let Err(e) = std::fs::create_dir_all(&home_node_modules) {
+        append_log(&main_log, &format!("[setup] create home/node_modules failed: {e}"));
+    }
+    let plugins = discover_all_plugins(app_root.as_deref(), &app_data);
+    for p in plugins.iter().filter(|p| !p.valid) {
+        append_log(
+            &main_log,
+            &format!(
+                "[setup] invalid plugin {} ({}): {}",
+                p.id,
+                if p.source == shell_core::plugin_discovery::PluginSource::Bundled { "bundled" } else { "user" },
+                p.invalid_reason.as_deref().unwrap_or("?")
+            ),
+        );
+    }
+    let links = shell_core::plugin_discovery::junction_targets(&plugins);
+    if links.is_empty() {
+        append_log(&main_log, "[setup] no valid plugins found; skipping junctions");
+    } else {
+        for err in shell_core::plugins::ensure_junctions(&home_node_modules, &links) {
+            append_log(&main_log, &format!("[setup] junction: {err}"));
         }
     }
 
     // --- c. --patch 参数 ---
-    let patch_args = compute_patch_args(app_root.as_deref(), &settings);
+    let patch_args = compute_patch_args(app_root.as_deref(), &app_data, &settings);
     append_log(&main_log, &format!("[setup] patch args: {patch_args:?}"));
 
     // --- d. supervisor（真实 ops）存入 tauri State ---
@@ -295,6 +308,7 @@ fn setup_kernel(app: &tauri::App) {
     let runtime = Arc::new(KernelRuntime::new(
         spec_slot,
         supervisor.clone(),
+        app_data.clone(),
         settings_path,
         app_root,
         port,
