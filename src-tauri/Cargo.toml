@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/shell-core", "crates/kernel-process", "src/app"]
+members = ["crates/shell-core", "crates/kernel-process", "crates/kernel-update", "src/app"]
 
 [workspace.package]
 version = "0.5.0"
