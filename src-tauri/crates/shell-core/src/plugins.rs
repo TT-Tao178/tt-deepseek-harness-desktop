@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -40,6 +41,16 @@ pub fn ensure_junctions(home_node_modules: &Path, links: &[(String, PathBuf)]) -
         if target.exists() {
             // Already linked (or at least present): skip, keeping idempotency.
             continue;
+        }
+        // Scoped names (`@scope/pkg`) need the scope directory to exist.
+        if let Some(parent) = target.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                errors.push(format!(
+                    "failed to create parent dir for junction '{}': {e}",
+                    target.to_string_lossy()
+                ));
+                continue;
+            }
         }
         if !cfg!(windows) {
             errors.push(format!(
