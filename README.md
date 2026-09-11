@@ -26,6 +26,11 @@ node scripts/verify-plugins.cjs                      # 插件挂载/禁用往返
 cargo run --manifest-path src-tauri/Cargo.toml       # 开发运行
 ```
 
+## 安装与卸载
+
+- **安装**：向导式安装，**安装目录在向导里自选**（默认 `%LOCALAPPDATA%\TT DeepSeek Harness Desktop`，可改到任意可写目录，支持中文路径）； NSIS 为 Unicode 构建
+- **卸载**：控制面板/开始菜单卸载。会删除安装目录内全部内容（含更新产生的 `kernel-staging`/`kernel-backup`）；卸载前自动摘除 `dsh-home` 里的插件 junction，不会误删插件源目录；**会话数据默认保留**，卸载向导里勾选“删除应用数据”才一并清除
+
 ## 数据在哪（卸载不自动删）
 
 | 内容 | 路径 |
