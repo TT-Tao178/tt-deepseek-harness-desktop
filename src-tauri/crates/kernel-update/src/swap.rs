@@ -62,7 +62,8 @@ pub fn precheck(layout: &SwapLayout, need_bytes: u64) -> Result<(), String> {
 /// ① 备份轮换 → ② 正式改名入备份 → ③ staging 改名入正式；
 /// ③ 失败则反向恢复（备份换回正式）。
 /// `current_version` 用于备份目录命名（读不到时用时间戳）。
-pub fn swap_in(layout: &SwapLayout, version: &str, current_version: Option<&str>) -> Result<(), String> {
+/// 成功返回所用备份目录名（回滚时引用）。
+pub fn swap_in(layout: &SwapLayout, version: &str, current_version: Option<&str>) -> Result<String, String> {
     rotate_backups(layout)?;
 
     let backup_name = match current_version {
@@ -89,7 +90,7 @@ pub fn swap_in(layout: &SwapLayout, version: &str, current_version: Option<&str>
         }
         return Err(format!("staging 换入失败（已恢复原内核）: {e}"));
     }
-    Ok(())
+    Ok(backup_name)
 }
 
 /// 一键回滚：当前正式（坏的新版）挪到回收名，备份版本换入。
@@ -289,7 +290,9 @@ mod tests {
         fs::create_dir_all(&lay.staging_root).unwrap();
         touch_kernel(&lay.staging_root.join("0.1.0-rc.7"), "0.1.0-rc.7", "new");
 
-        swap_in(&lay, "0.1.0-rc.7", read_kernel_version(&lay.kernel_dir).as_deref()).expect("swap");
+        let backup_used = swap_in(&lay, "0.1.0-rc.7", read_kernel_version(&lay.kernel_dir).as_deref())
+            .expect("swap");
+        assert_eq!(backup_used, "0.1.0-rc.6", "备份名应来自当前版本号");
 
         // 正式现在是新版。
         assert_eq!(read_kernel_version(&lay.kernel_dir).as_deref(), Some("0.1.0-rc.7"));

@@ -138,6 +138,15 @@ impl InstallerHandle {
         self.pid
     }
 
+    /// 进程是否仍在运行（不消费 handle）。
+    pub fn is_running(&self) -> bool {
+        let mut child = match self.child.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        matches!(child.try_wait(), Ok(None))
+    }
+
     /// 取消：杀整个进程树（安装器可能还带自检内核子进程）。
     pub fn cancel(&self) {
         kernel_process::kill_tree::kill_tree(self.pid);
