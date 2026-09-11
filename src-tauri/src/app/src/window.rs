@@ -5,25 +5,17 @@
 //! - `tray` ：隐藏窗口并阻止关闭（驻留系统托盘）。
 //! - `quit` ：直接放行关闭；内核停止统一由 `run()` 的 `RunEvent::Exit` 处理。
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tauri::{App, AppHandle, CloseRequestApi, Manager, WebviewWindow, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
-use crate::supervisor::Supervisor;
-
-/// 已管理的 tauri State：settings.json 的绝对路径。
-/// 每次关闭请求时现读，保证取到最新的 close_behavior。
-pub struct SettingsPath(pub PathBuf);
+use crate::KernelRuntime;
 
 /// 在 setup 中调用：把 settings.json 路径放入 tauri State，
 /// 并在主窗口上注册关闭事件处理。
 pub fn init(app: &App) {
-    if let Ok(app_data) = app.path().app_data_dir() {
-        app.manage(SettingsPath(app_data.join("settings.json")));
-    }
     let Some(window) = app.get_webview_window("main") else {
         return; // 无主窗口（配置保证存在），跳过。
     };
@@ -62,8 +54,8 @@ fn handle_close_request(window: &WebviewWindow, api: &CloseRequestApi, approved:
 
 /// 读取当前 close_behavior；settings.json 缺失/损坏时 read_settings 返回默认 ask。
 fn current_close_behavior(window: &WebviewWindow) -> String {
-    match window.try_state::<SettingsPath>() {
-        Some(state) => shell_core::settings::read_settings(&state.0).close_behavior,
+    match window.try_state::<Arc<KernelRuntime>>() {
+        Some(rt) => shell_core::settings::read_settings(&rt.settings_path).close_behavior,
         None => "ask".to_string(),
     }
 }
@@ -92,11 +84,11 @@ fn ask_confirm_close(window: &WebviewWindow, approved: Arc<AtomicBool>) {
         });
 }
 
-/// 从 tauri State 取 supervisor 并 stop()（kill 内核进程树）。
+/// 从 tauri State 取 KernelRuntime 并 stop()（kill 内核进程树）。
 /// State 未管理（如内核目录缺失导致 setup_kernel 提前返回）时静默跳过，不 panic。
 pub fn stop_supervisor(app: &AppHandle) {
-    if let Some(state) = app.try_state::<Arc<Mutex<Supervisor>>>() {
-        let mut sup = match state.lock() {
+    if let Some(rt) = app.try_state::<Arc<KernelRuntime>>() {
+        let mut sup = match rt.supervisor.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };

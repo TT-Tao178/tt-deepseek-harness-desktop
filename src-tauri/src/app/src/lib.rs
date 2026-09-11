@@ -1,8 +1,11 @@
+mod menu;
+pub mod settings_ui;
 mod supervisor;
 pub mod window;
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,10 +13,41 @@ use tauri::Manager;
 
 use supervisor::{HealthResult, KernelOps, KernelState, Supervisor};
 
-/// 真实内核操作：按 KernelSpec 启动 node 进程，stdout/stderr 落盘 logs/kernel.log；
-/// 健康探测走 kernel-process::health，终止走 kill_tree。
+/// 内核运行时共享态：spec 可被换参（Roxy 开关 / 插件开关 / 内核更新后重启），
+/// supervisor 供命令与更新流程复用，generation 驱动防抖重启。
+pub struct KernelRuntime {
+    pub spec_slot: Arc<Mutex<kernel_process::spawn_spec::KernelSpec>>,
+    pub supervisor: Arc<Mutex<Supervisor>>,
+    pub settings_path: PathBuf,
+    pub app_root: Option<PathBuf>,
+    pub port: u16,
+    generation: AtomicU64,
+}
+
+impl KernelRuntime {
+    pub fn new(
+        spec_slot: Arc<Mutex<kernel_process::spawn_spec::KernelSpec>>,
+        supervisor: Arc<Mutex<Supervisor>>,
+        settings_path: PathBuf,
+        app_root: Option<PathBuf>,
+        port: u16,
+    ) -> Self {
+        KernelRuntime {
+            spec_slot,
+            supervisor,
+            settings_path,
+            app_root,
+            port,
+            generation: AtomicU64::new(0),
+        }
+    }
+}
+
+/// 真实内核操作：按 spec_slot 里当前的 KernelSpec 启动 node 进程，
+/// stdout/stderr 落盘 logs/kernel.log；健康探测走 kernel-process::health，
+/// 终止走 kill_tree。spec_slot 允许运行期换参（重启后生效）。
 struct RealOps {
-    spec: kernel_process::spawn_spec::KernelSpec,
+    spec_slot: Arc<Mutex<kernel_process::spawn_spec::KernelSpec>>,
     port: u16,
     log_path: PathBuf,
     child_slot: Arc<Mutex<Option<Child>>>,
@@ -21,7 +55,12 @@ struct RealOps {
 
 impl KernelOps for RealOps {
     fn spawn(&mut self) -> Result<u32, String> {
-        let mut cmd = self.spec.command();
+        let spec = self
+            .spec_slot
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let mut cmd = spec.command();
         // 内核 stdout/stderr 落盘（追加，保留多次重启的日志）。
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -86,6 +125,25 @@ fn locate_kernel_dir(app_root: &Path) -> Option<PathBuf> {
     None
 }
 
+/// 按 settings 计算 --patch 参数（tt-bg 恒在，roxy 按 settings.roxy.enabled）。
+/// app_root 为 None（未找到根）时返回空参数。
+fn compute_patch_args(app_root: Option<&Path>, settings: &shell_core::settings::AppSettings) -> Vec<String> {
+    let Some(root) = app_root else {
+        return Vec::new();
+    };
+    let res_path = root.join("resources");
+    let mut patch_args: Vec<String> = Vec::new();
+    let mut push_patch = |name: &str, enabled: bool| {
+        if let Some(src) = shell_core::plugins::find_plugin_src(root, &res_path, name) {
+            let path = shell_core::plugins::plugin_patch_path(&src);
+            patch_args.extend(shell_core::plugins::resolve_patch_args(&path, enabled));
+        }
+    };
+    push_patch("tt-bg", true);
+    push_patch("dsh-pet-roxy", settings.roxy.enabled);
+    patch_args
+}
+
 /// 追加一行到日志文件（失败静默，不 panic）。
 fn append_log(path: &Path, msg: &str) {
     use std::io::Write;
@@ -102,11 +160,8 @@ fn unix_ms() -> u128 {
 }
 
 #[tauri::command]
-fn service_get_status(state: tauri::State<'_, Arc<Mutex<Supervisor>>>) -> String {
-    let sup = match state.lock() {
-        Ok(g) => g,
-        Err(p) => p.into_inner(),
-    };
+fn service_get_status(state: tauri::State<'_, Arc<KernelRuntime>>) -> String {
+    let sup = lock(&state.supervisor);
     let payload = serde_json::json!({
         "state": format!("{:?}", sup.state()),
         "port": sup.ready_port(),
@@ -115,18 +170,30 @@ fn service_get_status(state: tauri::State<'_, Arc<Mutex<Supervisor>>>) -> String
 }
 
 #[tauri::command]
-fn service_restart(state: tauri::State<'_, Arc<Mutex<Supervisor>>>) -> Result<String, String> {
-    let mut sup = match state.lock() {
-        Ok(g) => g,
-        Err(p) => p.into_inner(),
-    };
-    sup.stop();
-    sup.start()?;
+fn service_restart(state: tauri::State<'_, Arc<KernelRuntime>>) -> Result<String, String> {
+    // 与 Roxy 开关同路径：重算 --patch 参数 → stop → start。
+    settings_ui::recompute_and_restart(&state);
+    let sup = lock(&state.supervisor);
     let payload = serde_json::json!({
         "state": format!("{:?}", sup.state()),
         "port": sup.ready_port(),
     });
     serde_json::to_string(&payload).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn settings_get(state: tauri::State<'_, Arc<KernelRuntime>>) -> String {
+    let s = shell_core::settings::read_settings(&state.settings_path);
+    serde_json::to_string(&s).unwrap_or_else(|_| "{}".to_string())
+}
+
+#[tauri::command]
+fn roxy_set(app: tauri::AppHandle, enabled: bool) {
+    settings_ui::toggle_roxy(&app, enabled);
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// 装配内核生命周期：日志目录 / DSH_HOME → junction → --patch 参数 → supervisor
@@ -166,40 +233,29 @@ fn setup_kernel(app: &tauri::App) {
     if app_root.is_none() {
         append_log(&main_log, "[setup] app root not found; skipping junctions and plugin patches");
     }
-    let resources = app_root.as_ref().map(|r| r.join("resources"));
-    let mut links: Vec<(String, PathBuf)> = Vec::new();
+    let settings_path = app_data.join("settings.json");
+    let settings = shell_core::settings::read_settings(&settings_path);
+
     if let Some(root) = &app_root {
-        let res_path: &Path = resources.as_deref().unwrap_or(root.as_path());
+        let res_path = root.join("resources");
+        let mut links: Vec<(String, PathBuf)> = Vec::new();
         for name in ["tt-bg", "dsh-pet-roxy"] {
-            if let Some(src) = shell_core::plugins::find_plugin_src(root, res_path, name) {
+            if let Some(src) = shell_core::plugins::find_plugin_src(root, &res_path, name) {
                 links.push((name.to_string(), src));
             }
         }
-    }
-    if links.is_empty() {
-        append_log(&main_log, "[setup] no plugin sources found; skipping junctions");
-    } else {
-        for err in shell_core::plugins::ensure_junctions(&home_node_modules, &links) {
-            append_log(&main_log, &format!("[setup] junction: {err}"));
+        if links.is_empty() {
+            append_log(&main_log, "[setup] no plugin sources found; skipping junctions");
+        } else {
+            for err in shell_core::plugins::ensure_junctions(&home_node_modules, &links) {
+                append_log(&main_log, &format!("[setup] junction: {err}"));
+            }
         }
     }
 
-    // --- c. --patch 参数（tt-bg 恒在，roxy 按 settings）---
-    let settings = shell_core::settings::read_settings(&app_data.join("settings.json"));
-    let mut patch_args: Vec<String> = Vec::new();
-    if let Some(root) = &app_root {
-        let res_path: &Path = resources.as_deref().unwrap_or(root.as_path());
-        let mut push_patch = |name: &str, enabled: bool| {
-            if let Some(src) = shell_core::plugins::find_plugin_src(root, res_path, name) {
-                let path = shell_core::plugins::plugin_patch_path(&src);
-                patch_args.extend(shell_core::plugins::resolve_patch_args(&path, enabled));
-            }
-        };
-        push_patch("tt-bg", true);
-        push_patch("dsh-pet-roxy", settings.roxy.enabled);
-    }
+    // --- c. --patch 参数 ---
+    let patch_args = compute_patch_args(app_root.as_deref(), &settings);
     append_log(&main_log, &format!("[setup] patch args: {patch_args:?}"));
-    app.manage(Arc::new(Mutex::new(patch_args.clone())));
 
     // --- d. supervisor（真实 ops）存入 tauri State ---
     let Some(kernel_dir) = app_root.as_deref().and_then(locate_kernel_dir) else {
@@ -214,6 +270,7 @@ fn setup_kernel(app: &tauri::App) {
         }
     };
     let plugins_dir = app_root
+        .as_ref()
         .map(|r| r.join("plugins"))
         .unwrap_or_else(|| kernel_dir.join("plugins"));
     let paths = shell_core::paths::DshPaths::new(app_data.clone(), kernel_dir.clone(), plugins_dir);
@@ -224,9 +281,10 @@ fn setup_kernel(app: &tauri::App) {
         patch_args,
         env: vec![],
     };
+    let spec_slot = Arc::new(Mutex::new(spec));
     let child_slot: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
     let ops = RealOps {
-        spec,
+        spec_slot: spec_slot.clone(),
         port,
         log_path: paths.kernel_log(),
         child_slot: child_slot.clone(),
@@ -234,7 +292,14 @@ fn setup_kernel(app: &tauri::App) {
     let mut supervisor = Supervisor::new(Box::new(ops));
     supervisor.set_ready_port(port);
     let supervisor = Arc::new(Mutex::new(supervisor));
-    app.manage(supervisor.clone());
+    let runtime = Arc::new(KernelRuntime::new(
+        spec_slot,
+        supervisor.clone(),
+        settings_path,
+        app_root,
+        port,
+    ));
+    app.manage(runtime.clone());
     append_log(
         &main_log,
         &format!(
@@ -243,26 +308,29 @@ fn setup_kernel(app: &tauri::App) {
         ),
     );
 
-    // --- e. spawn 内核 + poll 线程（W8a 阶段不 load_url）---
-    match supervisor.lock().unwrap_or_else(|p| p.into_inner()).start() {
+    // --- e. spawn 内核 + poll 线程（Ready 后主窗口导航到内核页面）---
+    match lock(&supervisor).start() {
         Ok(()) => append_log(&main_log, &format!("[setup] kernel spawn requested on port {port}")),
         Err(e) => append_log(&main_log, &format!("[setup] kernel start failed: {e}")),
     }
-    spawn_poll_thread(supervisor, child_slot);
+    spawn_poll_thread(app.handle().clone(), supervisor, child_slot);
+
+    // --- f. 托盘（Roxy 勾选状态与设置一致）---
+    menu::init(app, settings.roxy.enabled);
 }
 
 /// 一个 poll 线程，每 200ms：Starting/Ready 时检测进程退出（try_wait → on_exit）
 /// 并 poll_health；Crashed 时调 restart（内部等待退避延迟）。
+/// 首次 Ready 时把主窗口导航到内核页面（ui-stub 启动页被替换）。
 fn spawn_poll_thread(
+    handle: tauri::AppHandle,
     sup_state: Arc<Mutex<Supervisor>>,
     child_slot: Arc<Mutex<Option<Child>>>,
 ) {
+    let navigated = Arc::new(AtomicBool::new(false));
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(200));
-        let mut sup = match sup_state.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
+        let mut sup = lock(&sup_state);
         match sup.state() {
             KernelState::Starting | KernelState::Ready => {
                 // 检测进程退出（外部 exit 事件 → on_exit）。
@@ -275,7 +343,9 @@ fn spawn_poll_thread(
                 }
                 match sup.poll_health() {
                     HealthResult::Ready => {
-                        eprintln!("[kernel-supervisor] kernel ready on port {:?}", sup.ready_port())
+                        if !navigated.swap(true, Ordering::Relaxed) {
+                            navigate_main_to_kernel(&handle, sup.ready_port());
+                        }
                     }
                     HealthResult::Crashed => {
                         eprintln!("[kernel-supervisor] kernel crashed; scheduling restart")
@@ -299,15 +369,32 @@ fn spawn_poll_thread(
     });
 }
 
+/// 主窗口导航到内核 Web UI（仅首次 Ready 调用一次）。
+fn navigate_main_to_kernel(handle: &tauri::AppHandle, port: Option<u16>) {
+    let Some(port) = port else { return };
+    let Some(window) = handle.get_webview_window("main") else {
+        return;
+    };
+    let url = format!("http://127.0.0.1:{port}/");
+    match tauri::Url::parse(&url) {
+        Ok(u) => {
+            if let Err(e) = window.navigate(u) {
+                eprintln!("[window] navigate failed ({url}): {e}");
+                // 兜底：让页面自己跳过去。
+                let _ = window.eval(&format!("location.replace('{url}')"));
+            } else {
+                eprintln!("[window] navigated to {url}");
+            }
+        }
+        Err(e) => eprintln!("[window] bad url {url}: {e}"),
+    }
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 已有实例时聚焦主窗口。
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            menu::focus_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -315,7 +402,12 @@ pub fn run() {
             window::init(app);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![service_get_status, service_restart])
+        .invoke_handler(tauri::generate_handler![
+            service_get_status,
+            service_restart,
+            settings_get,
+            roxy_set
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
