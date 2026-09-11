@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// Description of how to spawn the kernel process.
+#[derive(Clone)]
 pub struct KernelSpec {
     /// Path to the Node.js executable.
     pub node_exe: PathBuf,
