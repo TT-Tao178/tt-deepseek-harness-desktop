@@ -36,15 +36,6 @@ pub struct RoxySettings {
     pub enabled: bool,
 }
 
-/// Window background image settings.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct BackgroundSettings {
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default = "default_opacity")]
-    pub opacity: f64,
-}
-
 /// The persisted application settings (v8 schema).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AppSettings {
@@ -58,8 +49,6 @@ pub struct AppSettings {
     pub roxy: RoxySettings,
     #[serde(default)]
     pub kernel: KernelSettings,
-    #[serde(default)]
-    pub background: BackgroundSettings,
 }
 
 fn default_close_behavior() -> String {
@@ -78,17 +67,13 @@ fn default_keep_backups() -> u32 {
     1
 }
 
-fn default_opacity() -> f64 {
-    1.0
-}
-
 /// Registry ids accepted by the shell (whitelist passed to the installer).
 pub const REGISTRY_NPMMIRROR: &str = "npmmirror";
 pub const REGISTRY_NPMJS: &str = "npmjs";
 
-/// The well-known bundled plugin ids seeded into `plugins.enabled` on
-/// migration from a legacy settings file.
-pub const LEGACY_PLUGIN_IDS: [&str; 2] = ["tt-bg", "dsh-pet-roxy"];
+/// The bundled plugin id seeded into `plugins.enabled` on migration from a
+/// legacy settings file (v8.0+: tt-bg 已随 0.4.0 移除).
+pub const LEGACY_PLUGIN_IDS: [&str; 1] = ["dsh-pet-roxy"];
 
 impl Default for KernelSettings {
     fn default() -> Self {
@@ -109,15 +94,6 @@ impl Default for RoxySettings {
     }
 }
 
-impl Default for BackgroundSettings {
-    fn default() -> Self {
-        Self {
-            path: None,
-            opacity: default_opacity(),
-        }
-    }
-}
-
 impl Default for AppSettings {
     fn default() -> Self {
         AppSettings {
@@ -125,14 +101,8 @@ impl Default for AppSettings {
             plugins: PluginsSettings::default(),
             roxy: RoxySettings::default(),
             kernel: KernelSettings::default(),
-            background: BackgroundSettings::default(),
         }
     }
-}
-
-/// Whether an opacity value is usable (not NaN, within `[0.0, 1.0]`).
-fn valid_opacity(v: f64) -> bool {
-    !v.is_nan() && (0.0..=1.0).contains(&v)
 }
 
 fn valid_registry(v: &str) -> bool {
@@ -144,25 +114,22 @@ fn sanitize(s: &mut AppSettings) {
     if !matches!(s.close_behavior.as_str(), "ask" | "tray" | "quit") {
         s.close_behavior = default_close_behavior();
     }
+    // v8.0：tt-bg 集成已整体移除，剥离历史遗留的开关项。
+    s.plugins.enabled.remove("tt-bg");
     if !valid_registry(&s.kernel.registry) {
         s.kernel.registry = default_registry();
     }
     if !(1..=2).contains(&s.kernel.keep_backups) {
         s.kernel.keep_backups = default_keep_backups();
     }
-    if !valid_opacity(s.background.opacity) {
-        s.background.opacity = default_opacity();
-    }
 }
 
 /// One-time migration from the legacy v7 schema:
 /// an empty `plugins.enabled` map is seeded from `roxy.enabled`
-/// (`tt-bg` + `dsh-pet-roxy` both follow it; tt-bg was always-on before, so
-/// a disabled roxy still leaves tt-bg on).
+/// (tt-bg 集成已在 0.4.0 移除，仅迁移 dsh-pet-roxy).
 fn migrate(s: &mut AppSettings) {
     if s.plugins.enabled.is_empty() {
         let roxy_on = s.roxy.enabled;
-        s.plugins.enabled.insert("tt-bg".to_string(), true);
         s.plugins
             .enabled
             .insert("dsh-pet-roxy".to_string(), roxy_on);
@@ -220,17 +187,6 @@ pub fn set_close_behavior(s: &mut AppSettings, v: &str) {
     }
 }
 
-/// Merge a background update: `None` keeps the current value, `Some` overwrites;
-/// an invalid opacity is replaced with `1.0`.
-pub fn set_background(s: &mut AppSettings, path: Option<String>, opacity: Option<f64>) {
-    if let Some(path) = path {
-        s.background.path = Some(path);
-    }
-    if let Some(opacity) = opacity {
-        s.background.opacity = if valid_opacity(opacity) { opacity } else { default_opacity() };
-    }
-}
-
 /// Registry URL for a whitelisted registry id (returns None for unknown ids).
 pub fn registry_url(registry: &str) -> Option<&'static str> {
     match registry {
@@ -262,12 +218,11 @@ mod tests {
         let root = test_root("missing");
         let s = read_settings(&root.join("settings.json"));
         assert_eq!(s.close_behavior, "ask");
-        assert!(is_plugin_enabled(&s, "tt-bg", true));
+        assert!(!s.plugins.enabled.contains_key("tt-bg"), "tt-bg 已移除，不得再种子");
         assert!(is_plugin_enabled(&s, "dsh-pet-roxy", true));
         assert_eq!(s.kernel.registry, "npmmirror");
         assert_eq!(s.kernel.keep_backups, 1);
         assert_eq!(s.kernel.last_checked, None);
-        assert_eq!(s.background.opacity, 1.0);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -290,16 +245,14 @@ mod tests {
         // v7 schema: roxy disabled, kernel.channel/mirror present.
         fs::write(
             &p,
-            r#"{"close_behavior":"tray","roxy":{"enabled":false},"kernel":{"channel":"stable","mirror":"https://registry.npmmirror.com"},"background":{"opacity":0.5}}"#,
+            r#"{"close_behavior":"tray","roxy":{"enabled":false},"kernel":{"channel":"stable","mirror":"https://registry.npmmirror.com"}}"#,
         )
         .expect("write v7 json");
         let s = read_settings(&p);
         assert_eq!(s.close_behavior, "tray");
         assert!(!is_plugin_enabled(&s, "dsh-pet-roxy", true), "roxy off must migrate to dsh-pet-roxy off");
-        assert!(is_plugin_enabled(&s, "tt-bg", true), "tt-bg stays on");
+        assert!(!s.plugins.enabled.contains_key("tt-bg"), "tt-bg 已移除");
         assert_eq!(s.kernel.registry, "npmmirror", "v7 kernel block falls back to default registry");
-        assert_eq!(s.background.opacity, 0.5);
-
         // Writing back produces the v8 schema (no `roxy` key, plugins map present).
         write_settings(&p, &s).expect("write back");
         let raw = fs::read_to_string(&p).expect("read raw");
@@ -326,14 +279,13 @@ mod tests {
         fs::create_dir_all(&root).expect("create temp dir");
         fs::write(
             &p,
-            r#"{"close_behavior":"minimize","kernel":{"registry":"http://evil.example","keep_backups":9},"background":{"opacity":2.5}}"#,
+            r#"{"close_behavior":"minimize","kernel":{"registry":"http://evil.example","keep_backups":9}}"#,
         )
         .expect("write json");
         let s = read_settings(&p);
         assert_eq!(s.close_behavior, "ask", "unknown close_behavior must fall back to ask");
         assert_eq!(s.kernel.registry, "npmmirror", "non-whitelisted registry must fall back");
         assert_eq!(s.kernel.keep_backups, 1, "keep_backups out of 1..=2 must fall back");
-        assert_eq!(s.background.opacity, 1.0, "out-of-range opacity must fall back to 1.0");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -343,11 +295,9 @@ mod tests {
         let p = root.join("nested").join("settings.json");
         let mut s = AppSettings::default();
         s.close_behavior = "tray".to_string();
-        set_plugin_enabled(&mut s, "tt-bg", false);
         set_plugin_enabled(&mut s, "my-plugin", true);
         s.kernel.registry = "npmjs".to_string();
         s.kernel.installed_version = Some("0.1.0-rc.7".to_string());
-        s.background.opacity = 0.42;
         write_settings(&p, &s).expect("write settings");
         let back = read_settings(&p);
         assert_eq!(back, s, "read-back must equal what was written");
@@ -387,10 +337,5 @@ mod tests {
         set_close_behavior(&mut s, "bogus");
         assert_eq!(s.close_behavior, "tray", "invalid close_behavior must be ignored");
 
-        set_background(&mut s, Some("a.png".to_string()), None);
-        set_background(&mut s, None, Some(0.5));
-        set_background(&mut s, None, Some(f64::NAN));
-        assert_eq!(s.background.path.as_deref(), Some("a.png"));
-        assert_eq!(s.background.opacity, 1.0, "NaN opacity must be reset");
     }
 }
