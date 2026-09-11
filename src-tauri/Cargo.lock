@@ -4116,6 +4116,7 @@ version = "0.5.0"
 dependencies = [
  "embed-resource",
  "kernel-process",
+ "kernel-update",
  "serde",
  "serde_json",
  "serde_yaml",

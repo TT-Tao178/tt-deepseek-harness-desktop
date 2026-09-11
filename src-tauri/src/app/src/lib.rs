@@ -1,3 +1,4 @@
+mod kernel_manager;
 mod menu;
 pub mod settings_ui;
 mod supervisor;
@@ -121,7 +122,7 @@ fn app_root_from_exe() -> Option<PathBuf> {
 }
 
 /// 在 app 根下定位内核目录（dev：`<root>/kernel`；安装：resources 下）。
-fn locate_kernel_dir(app_root: &Path) -> Option<PathBuf> {
+pub(crate) fn locate_kernel_dir(app_root: &Path) -> Option<PathBuf> {
     for cand in [
         app_root.join("kernel"),
         app_root.join("resources").join("kernel"),
@@ -200,6 +201,24 @@ fn settings_get(state: tauri::State<'_, Arc<KernelRuntime>>) -> String {
 #[tauri::command]
 fn roxy_set(app: tauri::AppHandle, enabled: bool) {
     settings_ui::toggle_roxy(&app, enabled);
+}
+
+#[tauri::command]
+fn settings_set_close_behavior(
+    state: tauri::State<'_, Arc<KernelRuntime>>,
+    value: String,
+) -> bool {
+    let mut s = shell_core::settings::read_settings(&state.settings_path);
+    let before = s.close_behavior.clone();
+    shell_core::settings::set_close_behavior(&mut s, &value);
+    let changed = s.close_behavior != before;
+    if changed {
+        if let Err(e) = shell_core::settings::write_settings(&state.settings_path, &s) {
+            eprintln!("[settings] write close_behavior failed: {e}");
+            return false;
+        }
+    }
+    changed
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -420,7 +439,13 @@ pub fn run() {
             service_get_status,
             service_restart,
             settings_get,
-            roxy_set
+            settings_set_close_behavior,
+            roxy_set,
+            kernel_manager::kernel_status,
+            kernel_manager::kernel_check_updates,
+            kernel_manager::kernel_install,
+            kernel_manager::kernel_cancel,
+            kernel_manager::kernel_rollback
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
