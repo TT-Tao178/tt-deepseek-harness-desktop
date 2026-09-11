@@ -1921,6 +1921,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel-update"
+version = "0.5.0"
+dependencies = [
+ "kernel-process",
+ "serde",
+ "serde_json",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
