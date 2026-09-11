@@ -2,7 +2,7 @@
  * verify-plugins.cjs — v8 插件机制集成验证（门 6）。
  *
  * 模拟应用真实启动路径，验证「全挂载 + 用户 patch 层禁用」机制：
- *   1. junction（valid 全集）+ --patch（valid 全集）→ / 200 且
+ *   1. junction + --patch → / 200 且
  *      /dsh-pet-roxy/config 返回插件 JSON（body 含 config.expressions）
  *   2. 写用户 patch 层禁用 pet-roxy（profiles/web/cordis.patch.yml）→
  *      重启 → / 200 且 roxy 路由返回 SPA HTML（不再是插件 JSON）
@@ -85,9 +85,8 @@ function writeUserPatchLayer(home, disabledIds) {
 /** 启动内核（全插件 --patch）并等待就绪。 */
 async function startKernel(home) {
   const port = await freePort();
-  const patchTtbg = path.join(PLUGINS, 'tt-bg', 'cordis.patch.yml');
   const patchRoxy = path.join(PLUGINS, 'dsh-pet-roxy', 'cordis.patch.yml');
-  const args = [BIN_JS, '--profile', 'web', '--patch', patchTtbg, '--patch', patchRoxy, '--port', String(port)];
+  const args = [BIN_JS, '--profile', 'web', '--patch', patchRoxy, '--port', String(port)];
   const child = spawn(KERNEL_NODE, args, {
     env: { ...process.env, DSH_HOME: home },
     stdio: ['ignore', 'ignore', 'pipe'],
@@ -123,7 +122,7 @@ function stopKernel(child) {
 }
 
 async function main() {
-  check('内核与插件就位', fs.existsSync(KERNEL_NODE) && fs.existsSync(path.join(PLUGINS, 'tt-bg', 'cordis.patch.yml')) && fs.existsSync(path.join(PLUGINS, 'dsh-pet-roxy', 'cordis.patch.yml')));
+  check('内核与插件就位', fs.existsSync(KERNEL_NODE) && fs.existsSync(path.join(PLUGINS, 'dsh-pet-roxy', 'cordis.patch.yml')));
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'verify-plugins-'));
   const home = path.join(tmp, 'dsh-home');
@@ -131,9 +130,8 @@ async function main() {
   fs.mkdirSync(nm, { recursive: true });
 
   // junction：valid 全集（与壳 discover→junction_targets 同布局）。
-  mklinkJunction(path.join(nm, 'tt-bg'), path.join(PLUGINS, 'tt-bg'));
   mklinkJunction(path.join(nm, 'dsh-pet-roxy'), path.join(PLUGINS, 'dsh-pet-roxy'));
-  check('junction 建立（tt-bg + dsh-pet-roxy）', fs.existsSync(path.join(nm, 'tt-bg')) && fs.existsSync(path.join(nm, 'dsh-pet-roxy')));
+  check('junction 建立（dsh-pet-roxy）', fs.existsSync(path.join(nm, 'dsh-pet-roxy')));
 
   try {
     // ---------- 1. 全启用（无禁用条目） ----------

@@ -188,6 +188,50 @@ fn apply_plugin_mount(
     let links = shell_core::plugin_discovery::junction_targets(&plugins);
     let home_nm = app_data.join("dsh-home").join("node_modules");
     let _ = std::fs::create_dir_all(&home_nm);
+    // 清理不再存在的插件留下的过期 junction（如已移除的 tt-bg）。
+    // dsh-home/node_modules 内的链接全部由壳创建；只摘 reparse point
+    // （junction/符号链接），绝不递归删除真实目录。
+    let valid_ids: Vec<String> = links.iter().map(|(id, _)| id.clone()).collect();
+    let is_reparse = |path: &Path| {
+        std::fs::symlink_metadata(path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    };
+    let prune = |path: &Path, display: &str| {
+        if !is_reparse(path) {
+            return; // 真实目录不碰
+        }
+        let gone = !path.exists(); // 链接目标已消失
+        let unmanaged = !display.starts_with('@') && !valid_ids.iter().any(|v| v == display);
+        let scope_stale = display.starts_with('@') && {
+            // scope 链接形如 "@scope/pkg"（在 valid_ids 里带斜杠），单层目录不会出现
+            false
+        };
+        let _ = scope_stale;
+        if gone || unmanaged {
+            match std::fs::remove_dir(path).or_else(|_| std::fs::remove_file(path)) {
+                Ok(()) => log(format!("pruned stale junction: {display}")),
+                Err(e) => log(format!("prune {display} failed: {e}")),
+            }
+        }
+    };
+    if let Ok(entries) = std::fs::read_dir(&home_nm) {
+        for e in entries.filter_map(|e| e.ok()) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let path = e.path();
+            if name.starts_with('@') {
+                if let Ok(inner) = std::fs::read_dir(&path) {
+                    for x in inner.filter_map(|x| x.ok()) {
+                        let sub = format!("{name}/{}", x.file_name().to_string_lossy());
+                        prune(&x.path(), &sub);
+                    }
+                }
+                // scope 目录若已空且非 reparse，留给 ensure_junctions 复用
+            } else {
+                prune(&path, &name);
+            }
+        }
+    }
     for err in shell_core::plugins::ensure_junctions(&home_nm, &links) {
         log(err);
     }
@@ -479,7 +523,8 @@ pub fn run() {
             plugin_manager::plugin_list,
             plugin_manager::plugin_set_enabled,
             plugin_manager::plugin_import,
-            plugin_manager::plugin_remove
+            plugin_manager::plugin_remove,
+            window::close_dialog_action
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

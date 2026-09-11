@@ -41,6 +41,9 @@ pub fn init(app: &App, roxy_enabled: bool) {
     };
 
     let roxy_handle = roxy.clone();
+    // 托盘图标 = 应用图标（与任务栏/exe 图标同源：icons/icon.ico）。
+    let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.ico"))
+        .map_err(|e| format!("decode tray icon: {e}"));
     let builder = TrayIconBuilder::with_id("main-tray")
         .tooltip("TT DeepSeek Harness Desktop")
         .menu(&menu)
@@ -61,6 +64,14 @@ pub fn init(app: &App, roxy_enabled: bool) {
                 _ => {}
             }
         });
+
+    let builder = match tray_icon {
+        Ok(icon) => builder.icon(icon),
+        Err(e) => {
+            eprintln!("[tray] icon decode failed, using default: {e}");
+            builder
+        }
+    };
 
     if let Err(e) = builder.build(app) {
         eprintln!("[tray] build failed: {e}");

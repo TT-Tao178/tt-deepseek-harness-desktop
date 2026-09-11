@@ -1,5 +1,0 @@
-# tt-bg bundle patch：向 web 组合挂载 tt-bg（背景显示层）。
-# 用法：dsh web --patch <本文件路径>（ServiceManager 启动时传入）。
-- insert:
-    - id: tt-bg
-      name: tt-bg

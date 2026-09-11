@@ -1,4 +1,4 @@
-# TT DeepSeek Harness Desktop (v0.5.0)
+# TT DeepSeek Harness Desktop (v0.4.0)
 
 > **非官方项目**：基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`@deepseek-ai/dsh`）的 Windows 桌面封装，与 DeepSeek 官方无隶属关系。素材（Roxy 宠物图）禁商用。
 
@@ -10,8 +10,8 @@
 
 - **双击即用**：捆绑内核（node.exe + 788 包）随应用分发，自动拉起 + 崩溃自愈（退避 1s/4s/16s ×3）
 - **内核管理**（托盘 → 设置）：检查官方 npm 源全部版本（默认 npmmirror 镜像，可切 npmjs）→ 下载 → sha512 校验（fail-closed，不落盘不解压）→ staging 自检 → 原子切换 → 健康失败自动回滚；保留上一版本备份，一键回滚
-- **插件管理**：列表 / 按名开关（官方用户层 disabled 条目机制）/ 导入本地插件目录（校验 package.json + cordis.patch.yml）/ 移除进 plugin-trash（手工可恢复）；坏插件标红不阻塞启动
-- **桌面集成**：托盘（显示主窗 / 设置 / Roxy 开关 / 退出）、关闭行为三态（询问 / 托盘 / 退出）、单实例
+- **插件管理**：列表 / 按名开关（官方用户层 disabled 条目机制）/ 导入本地插件目录（校验 package.json + cordis.patch.yml）/ 移除进 plugin-trash（手工可恢复）；坏插件标红不阻塞启动；启动时自动清理失效 junction（卸载插件/换目录后自愈）
+- **桌面集成**：伊蕾娜图标（托盘 / 任务栏 / 安装器同源 ico）、托盘（显示主窗 / 设置 / Roxy 开关 / 退出）、关闭 × 弹三选项对话框（退出到托盘 / 关闭程序 / 取消，可勾选「不再弹出询问」）、单实例
 - **安全**：内核下载校验不过不执行、不跑任何包安装脚本、tar 条目拒绝路径穿越与硬链接、API Key 只进 Windows 凭据管理器（由 DSH Web 内配置）
 
 ## 一键启动 / 一键关闭
@@ -64,8 +64,9 @@ src-tauri/
   src/app/                 # Tauri 装配: supervisor/托盘/窗口/命令/设置窗口页
 resources/installer/       # install-kernel.cjs（零依赖 Node 安装器）
 kernel/                    # 内核载荷（更新器只整目录换名）
-plugins/                   # 内置插件（tt-bg / dsh-pet-roxy）
+plugins/                   # 内置插件（dsh-pet-roxy；tt-bg 已于 0.4.0 移除）
 scripts/                   # flatten/verify 脚本 + installer 单测
+out/                       # 打包产物（Setup.exe）
 ```
 
 规格文档：`../tt-deepseek-harness-desktop-spec-v8.0.md`（含执行计划、威胁模型、问题记录）。
