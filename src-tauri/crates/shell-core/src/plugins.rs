@@ -110,6 +110,61 @@ pub fn resolve_patch_args(patch_path: &Path, enabled: bool) -> Vec<String> {
     }
 }
 
+/// 解析插件 cordis.patch.yml 里的 insert id 列表（用户层 disable 条目按它定位）。
+/// 解析失败返回空（调用方降级为模块名）。
+pub fn parse_insert_ids(patch_yml: &Path) -> Vec<String> {
+    let Ok(raw) = fs::read_to_string(patch_yml) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_yaml::from_str::<serde_yaml::Value>(&raw) else {
+        return Vec::new();
+    };
+    let Some(entries) = v.as_sequence() else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    for entry in entries {
+        let Some(insert) = entry.get("insert").and_then(|x| x.as_sequence()) else {
+            continue;
+        };
+        for row in insert {
+            if let Some(id) = row.get("id").and_then(|x| x.as_str()) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids
+}
+
+/// 写内核「用户 patch 层」（`<dsh-home>/profiles/web/cordis.patch.yml`）：
+/// 对 disabled_ids 里的每个 insert id 生成 `disabled: true` 条目（内核在
+/// bundle 层之后应用本层，同 id 替换/禁用一票否决）。整文件由壳重新生成
+/// （单一事实源 = settings.plugins.enabled），幂等可重跑。
+pub fn write_user_patch_layer(path: &Path, disabled_ids: &[String]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create profile dir: {e}"))?;
+    }
+    let mut body = String::from(
+        "# TT DeepSeek Harness Desktop 用户 patch 层（由壳生成，请勿手改）。\n\
+         # 禁用的插件在此以 disabled: true 声明；启用集由 settings.json 驱动。\n",
+    );
+    if disabled_ids.is_empty() {
+        body.push_str("[]\n");
+    } else {
+        for id in disabled_ids {
+            // id 来自插件 patch 解析；只放行 loader id 字符集，防注入。
+            if !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            {
+                continue;
+            }
+            body.push_str(&format!("- id: {id}\n  disabled: true\n"));
+        }
+    }
+    fs::write(path, body).map_err(|e| format!("write user patch layer: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +259,52 @@ mod tests {
         // enabled -> path is passed through verbatim, existence is not checked
         let args = resolve_patch_args(Path::new("missing.yml"), true);
         assert_eq!(args, vec!["--patch".to_string(), "missing.yml".to_string()]);
+    }
+
+    #[test]
+    fn parse_insert_ids_from_patch() {
+        let root = test_root("insertids");
+        let p = root.join("cordis.patch.yml");
+        fs::create_dir_all(&root).expect("mkdir");
+        fs::write(
+            &p,
+            "- insert:\n    - id: pet-roxy\n      name: 'dsh-pet-roxy'\n- insert:\n    - id: pet-roxy-ext\n      name: dsh-pet-roxy\n",
+        )
+        .expect("write");
+        assert_eq!(parse_insert_ids(&p), vec!["pet-roxy", "pet-roxy-ext"]);
+
+        // 无 insert / 坏 YAML → 空（降级）。
+        fs::write(&p, "[]\n").expect("write empty");
+        assert!(parse_insert_ids(&p).is_empty());
+        fs::write(&p, "{ bad yaml: [").expect("write bad");
+        assert!(parse_insert_ids(&p).is_empty());
+        assert!(parse_insert_ids(&root.join("missing.yml")).is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn user_patch_layer_written_and_idempotent() {
+        let root = test_root("userpatch");
+        let p = root.join("profiles").join("web").join("cordis.patch.yml");
+
+        // 禁用两个 id。
+        write_user_patch_layer(&p, &["pet-roxy".into(), "tt-bg".into()]).expect("write");
+        let raw = fs::read_to_string(&p).expect("read");
+        assert!(raw.contains("- id: pet-roxy\n  disabled: true"));
+        assert!(raw.contains("- id: tt-bg\n  disabled: true"));
+        assert!(!raw.starts_with('\u{feff}'), "no BOM");
+
+        // 全启用 → 空列表占位（合法空 patch）。
+        write_user_patch_layer(&p, &[]).expect("write empty");
+        let raw = fs::read_to_string(&p).expect("read");
+        assert!(raw.contains("[]"));
+
+        // 恶意 id 被跳过（loader id 字符集白名单）。
+        write_user_patch_layer(&p, &["ok-id_1".into(), "bad id; rm -rf".into()]).expect("write");
+        let raw = fs::read_to_string(&p).expect("read");
+        assert!(raw.contains("- id: ok-id_1"));
+        assert!(!raw.contains("rm -rf"));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[cfg(windows)]

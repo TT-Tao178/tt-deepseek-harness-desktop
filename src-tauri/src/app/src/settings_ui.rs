@@ -76,21 +76,17 @@ pub fn request_kernel_restart(rt: &Arc<KernelRuntime>) {
     });
 }
 
-/// 立即重算 --patch 参数并重启内核（stop → start，端口不变）。
-/// 供防抖回调与 service_restart 命令复用；重启前幂等重建启用集 junction。
+/// 立即重算插件挂载并重启内核（stop → start，端口不变）。
+/// 供防抖回调与 service_restart 命令复用；junction + 用户 patch 层幂等重建。
 pub fn recompute_and_restart(rt: &KernelRuntime) {
     let settings = shell_core::settings::read_settings(&rt.settings_path);
-    let patch_args = crate::compute_patch_args(rt.app_root.as_deref(), &rt.app_data, &settings);
-
-    // junction 幂等重建（valid 全集；disabled 仅去掉 --patch，链接保留无害）。
-    let plugins = crate::discover_all_plugins(rt.app_root.as_deref(), &rt.app_data);
-    let links = shell_core::plugin_discovery::junction_targets(&plugins);
-    let home_nm = rt.app_data.join("dsh-home").join("node_modules");
-    let _ = std::fs::create_dir_all(&home_nm);
-    for err in shell_core::plugins::ensure_junctions(&home_nm, &links) {
-        eprintln!("[kernel] junction: {err}");
-    }
-
+    crate::apply_plugin_mount(
+        rt.app_root.as_deref(),
+        &rt.app_data,
+        &settings,
+        &|msg| eprintln!("[kernel] {msg}"),
+    );
+    let (patch_args, _) = crate::compute_mount_plan(rt.app_root.as_deref(), &rt.app_data, &settings);
     if let Ok(mut spec) = rt.spec_slot.lock() {
         spec.patch_args = patch_args;
     }
