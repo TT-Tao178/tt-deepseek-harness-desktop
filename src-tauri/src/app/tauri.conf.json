@@ -21,9 +21,23 @@
     "withGlobalTauri": true
   },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../../../kernel/": "kernel/",
+      "../../../plugins/": "plugins/",
+      "../../../resources/installer/": "resources/installer/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./installer-hooks.nsh"
+      }
+    }
   }
 }
