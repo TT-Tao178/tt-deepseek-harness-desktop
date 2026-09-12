@@ -1,20 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "TT DeepSeek Harness Desktop",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "identifier": "com.tt.deepharness",
   "build": {
     "frontendDist": "./ui-stub"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "TT DeepSeek Harness Desktop",
-        "width": 1280,
-        "height": 800
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     },

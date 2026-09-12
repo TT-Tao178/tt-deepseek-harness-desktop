@@ -447,7 +447,7 @@ fn setup_kernel(app: &tauri::App) {
     // --- f. 托盘（Roxy 勾选状态与设置一致）---
     // 必须从 plugins.enabled 判定：legacy 的 `roxy.enabled` 是 skip_serializing，
     // 首次写回后恒为默认值，用它初始化会让托盘勾选与真实状态不符。
-    menu::init(app, shell_core::settings::roxy_enabled(&settings));
+    menu::init(app);
 }
 
 /// 一个 poll 线程，每 200ms：Starting/Ready 时检测进程退出（try_wait → on_exit）
@@ -470,6 +470,8 @@ fn spawn_poll_thread(
     let mut nav: Option<(String, u64)> = None; // 主窗导航状态（见 navigate_main_to_kernel）
     // Ready 边沿检测：只有「非 Ready → Ready」的跳变才触发（重）导航。
     let mut was_ready = false;
+    // 重载节流：同一端口 5 秒内只（重）导航一次，防防抖期连点导致连环刷新。
+    let mut last_nav: Option<std::time::Instant> = None;
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(200));
         let mut sup = lock(&sup_state);
@@ -612,6 +614,61 @@ fn navigate_main_to_kernel(
     }
 }
 
+/// 主窗注入脚本：右上角「设置」齿轮（仅内核页面，tauri:// 页面不注入）。
+/// 点击导航到 ttshell://settings，由主窗 on_navigation 拦截并打开设置窗口
+/// （远程页面被 ACL 禁止直接调用壳命令，scheme 导航是唯一通道，见 P35）。
+const MAIN_INJECT: &str = r#"(function () {
+  if (location.hostname !== '127.0.0.1') return;
+  if (document.getElementById('ttshell-settings-btn')) return;
+  function mount() {
+    if (document.getElementById('ttshell-settings-btn')) return;
+    var b = document.createElement('div');
+    b.id = 'ttshell-settings-btn';
+    b.title = '设置';
+    b.style.cssText = 'position:fixed;top:14px;right:14px;width:36px;height:36px;' +
+      'border-radius:50%;background:rgba(15,23,42,.55);backdrop-filter:blur(6px);' +
+      'display:flex;align-items:center;justify-content:center;cursor:pointer;' +
+      'z-index:2147483647;transition:transform .15s,background .15s;user-select:none;';
+    b.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
+    b.addEventListener('mouseenter', function () { b.style.transform = 'scale(1.08)'; b.style.background = 'rgba(15,23,42,.75)'; });
+    b.addEventListener('mouseleave', function () { b.style.transform = 'scale(1)'; b.style.background = 'rgba(15,23,42,.55)'; });
+    b.addEventListener('click', function () { location.href = 'ttshell://settings'; });
+    document.documentElement.appendChild(b);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);
+  else mount();
+})();"#;
+
+/// 代码构建主窗（原 tauri.conf.json windows[0]）：
+/// - `on_navigation` 拦截 `ttshell://` scheme（设置入口通道，P35）；
+/// - 深色窗口背景（reload 期间无白闪，P36）。
+fn build_main_window(handle: &tauri::AppHandle) {
+    let nav_handle = handle.clone();
+    let builder = tauri::WebviewWindowBuilder::new(
+        handle,
+        "main",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("TT DeepSeek Harness Desktop")
+    .inner_size(1280.0, 800.0)
+    .background_color(tauri::window::Color(0x10, 0x14, 0x18, 0xff))
+    .initialization_script(MAIN_INJECT)
+    .on_navigation(move |url| {
+        if url.scheme() == "ttshell" {
+            // 设置入口：延时线程打开，避免在导航回调里同步建窗。
+            let h = nav_handle.clone();
+            std::thread::spawn(move || {
+                crate::settings_ui::open_settings_window(&h);
+            });
+            return false; // 阻止真实导航
+        }
+        true
+    });
+    if let Err(e) = builder.build() {
+        crate::logln!("[window] main window build failed: {e}");
+    }
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -620,8 +677,11 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            build_main_window(app.handle());
             setup_kernel(app);
             window::init(app);
+            // 关闭对话框预创建（隐藏），点 × 秒开（P33）。
+            window::precreate_close_dialog(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

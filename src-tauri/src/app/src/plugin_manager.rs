@@ -8,12 +8,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 use shell_core::plugin_discovery::{discover_plugins, inspect_plugin_dir, PluginSource};
 use shell_core::settings::{is_plugin_enabled, set_plugin_enabled};
 
-use crate::menu::TrayState;
 use crate::settings_ui;
 use crate::KernelRuntime;
 
@@ -77,11 +76,6 @@ pub fn plugin_set_enabled(
     if let Err(e) = shell_core::settings::write_settings(&rt.settings_path, &s) {
         crate::logln!("[plugin] write settings failed: {e}");
         return false;
-    }
-    if id == "dsh-pet-roxy" {
-        if let Some(tray) = app.try_state::<TrayState>() {
-            let _ = tray.roxy_item.set_checked(enabled);
-        }
     }
     settings_ui::request_kernel_restart(&rt);
     let _ = app.emit("plugin://changed", serde_json::json!({ "id": id, "enabled": enabled }));
@@ -210,12 +204,7 @@ pub fn plugin_remove(
         }
     }
 
-    // 4. 启用中被移除 → 重启内核生效；Roxy 特殊同步托盘。
-    if id == "dsh-pet-roxy" {
-        if let Some(tray) = app.try_state::<TrayState>() {
-            let _ = tray.roxy_item.set_checked(false);
-        }
-    }
+    // 4. 启用中被移除 → 重启内核生效。
     if was_enabled {
         settings_ui::request_kernel_restart(&rt);
     }
