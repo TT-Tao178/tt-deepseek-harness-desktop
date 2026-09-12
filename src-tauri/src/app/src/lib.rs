@@ -15,7 +15,7 @@ use tauri::Manager;
 
 use supervisor::{HealthResult, KernelOps, KernelState, Supervisor};
 
-/// 内核运行时共享态：spec 可被换参（Roxy 开关 / 插件开关 / 内核更新后重启），
+/// 内核运行时共享态：spec 可被换参（插件开关 / 内核更新后重启），
 /// supervisor 供命令与更新流程复用，generation 驱动防抖重启。
 pub struct KernelRuntime {
     pub spec_slot: Arc<Mutex<kernel_process::spawn_spec::KernelSpec>>,
@@ -167,11 +167,16 @@ fn discover_all_plugins(app_root: Option<&Path>, app_data: &Path) -> Vec<shell_c
     shell_core::plugin_discovery::discover_plugins(bundled_ref, &app_data.join("plugins"))
 }
 
-/// 挂载计划（v8 机制）：
+/// 挂载计划（v8 机制，v8.2 修正禁用投递方式，见 P46）：
 /// - **全部 valid 插件都参与挂载**（junction + --patch，顺序 = 发现顺序）；
-/// - 禁用的插件通过内核「用户 patch 层」的 `disabled: true` 条目实现
-///   （官方机制：后应用层同 id 一票否决；路由/组合里不再出现）。
-/// 返回（--patch 参数序列， 需禁用的 insert id 列表）。
+/// - 禁用的插件通过「同 id `disabled: true` 一票否决」实现。rc.6 内核的
+///   叠层顺序是 bundle → 用户层 → **--patch 覆盖层（argv 顺序，最后者胜）**，
+///   用户层的禁用条目会被插件自己的 insert 覆盖（P46），所以有禁用项时
+///   还要**追加一个末位 --patch 覆盖层**（文件由 [`apply_plugin_mount`]
+///   写出；用户层照旧双写，兼容旧内核叠层顺序）；
+/// - **页面宠物常开**：不管 settings 里残留什么，内置宠物永不产出禁用
+///   条目（用户明令；设置层 sanitize 是第一道防线）。
+/// 返回（--patch 参数序列，需禁用的 insert id 列表）。
 fn compute_mount_plan(
     app_root: Option<&Path>,
     app_data: &Path,
@@ -183,11 +188,15 @@ fn compute_mount_plan(
     for p in plugins.iter().filter(|p| p.valid) {
         patch_args.push("--patch".to_string());
         patch_args.push(p.patch_path.to_string_lossy().into_owned());
-        let enabled = shell_core::settings::is_plugin_enabled(
-            settings,
-            &p.id,
-            p.source == shell_core::plugin_discovery::PluginSource::Bundled,
-        );
+        // v8.2：页面宠物常开——不管 settings 里残留什么（≤0.4.1 写入过
+        // dsh-pet-roxy:false），内置宠物都不产出禁用条目。settings 层
+        // sanitize 是第一道防线，这里是挂载侧的最终保证。
+        let enabled = p.id != shell_core::settings::ROXY_PLUGIN_ID
+            && shell_core::settings::is_plugin_enabled(
+                settings,
+                &p.id,
+                p.source == shell_core::plugin_discovery::PluginSource::Bundled,
+            );
         if !enabled {
             let mut ids = shell_core::plugins::parse_insert_ids(&p.patch_path);
             if ids.is_empty() {
@@ -195,6 +204,12 @@ fn compute_mount_plan(
             }
             disabled_ids.extend(ids);
         }
+    }
+    if !disabled_ids.is_empty() {
+        let overlay =
+            shell_core::plugins::disable_overlay_path(&app_data.join("dsh-home"));
+        patch_args.push("--patch".to_string());
+        patch_args.push(overlay.to_string_lossy().into_owned());
     }
     (patch_args, disabled_ids)
 }
@@ -259,13 +274,20 @@ fn apply_plugin_mount(
         log(err);
     }
     let (_, disabled_ids) = compute_mount_plan(app_root, app_data, settings);
-    let user_patch = app_data
-        .join("dsh-home")
+    // P46 双投递：用户层（旧机制位置，rc.6 起对禁用无效，保留兼容旧内核）
+    // + 末位覆盖层（新机制位置，compute_mount_plan 追加的 --patch 指向它）。
+    // 两处内容一致、每次启动整文件重写，不存在陈旧条目。
+    let dsh_home = app_data.join("dsh-home");
+    let user_patch = dsh_home
         .join("profiles")
         .join("web")
         .join("cordis.patch.yml");
     if let Err(e) = shell_core::plugins::write_user_patch_layer(&user_patch, &disabled_ids) {
         log(format!("user patch layer: {e}"));
+    }
+    let overlay = shell_core::plugins::disable_overlay_path(&dsh_home);
+    if let Err(e) = shell_core::plugins::write_user_patch_layer(&overlay, &disabled_ids) {
+        log(format!("disable overlay: {e}"));
     }
 }
 
@@ -310,7 +332,7 @@ fn service_get_status(state: tauri::State<'_, Arc<KernelRuntime>>) -> String {
 
 #[tauri::command]
 fn service_restart(state: tauri::State<'_, Arc<KernelRuntime>>) -> Result<String, String> {
-    // 与 Roxy 开关同路径：重算 --patch 参数 → stop → start。
+    // 与插件开关同路径：重算 --patch 参数 → stop → start。
     settings_ui::recompute_and_restart(&state);
     let sup = lock(&state.supervisor);
     let payload = serde_json::json!({
@@ -324,11 +346,6 @@ fn service_restart(state: tauri::State<'_, Arc<KernelRuntime>>) -> Result<String
 fn settings_get(state: tauri::State<'_, Arc<KernelRuntime>>) -> String {
     let s = shell_core::settings::read_settings(&state.settings_path);
     serde_json::to_string(&s).unwrap_or_else(|_| "{}".to_string())
-}
-
-#[tauri::command]
-fn roxy_set(app: tauri::AppHandle, enabled: bool) {
-    settings_ui::set_roxy_enabled(&app, enabled);
 }
 
 #[tauri::command]
@@ -472,9 +489,7 @@ fn setup_kernel(app: &tauri::App) {
     }
     spawn_poll_thread(app.handle().clone(), supervisor, child_slot, paths.kernel_log());
 
-    // --- f. 托盘（Roxy 勾选状态与设置一致）---
-    // 必须从 plugins.enabled 判定：legacy 的 `roxy.enabled` 是 skip_serializing，
-    // 首次写回后恒为默认值，用它初始化会让托盘勾选与真实状态不符。
+    // --- f. 托盘（显示主窗口/设置/退出；宠物开关 v8.2 起已整体移除）---
     menu::init(app);
 }
 
@@ -484,7 +499,7 @@ fn setup_kernel(app: &tauri::App) {
 /// 主窗口（重）导航时机（P28）：
 /// - 首次 Ready：导航到内核 URL（启动页被替换）；
 /// - **Ready 边沿**（上一轮不是 Ready、这一轮 Ready）：说明内核经历了一次
-///   重启（Roxy/插件开关、service_restart、内核更新、回滚）。此时必须把
+///   重启（插件开关、service_restart、内核更新、回滚）。此时必须把
 ///   主窗口**重新导航**——旧页面里已注入的插件脚本（如宠物）不会因为内核
 ///   重启而消失，不重载用户就会看到「开关没用」；同时新内核（0.1.5+）的
 ///   地址带一次性 token，裸 URL 会 401，所以重导航的 URL 从 kernel.log 的
@@ -717,7 +732,6 @@ pub fn run() {
             service_restart,
             settings_get,
             settings_set_close_behavior,
-            roxy_set,
             kernel_manager::kernel_status,
             kernel_manager::kernel_set_registry,
             kernel_manager::kernel_check_updates,

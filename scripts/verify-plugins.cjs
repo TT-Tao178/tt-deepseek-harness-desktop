@@ -1,12 +1,14 @@
 /**
- * verify-plugins.cjs — v8 插件机制集成验证（门 6）。
+ * verify-plugins.cjs — v8 插件机制集成验证（门 6，v8.2 随 P46 修订）。
  *
- * 模拟应用真实启动路径，验证「全挂载 + 用户 patch 层禁用」机制：
+ * 模拟应用真实启动路径，验证「全挂载 + 同 id disabled 一票否决」机制：
  *   1. junction + --patch → / 200 且
  *      /dsh-pet-roxy/config 返回插件 JSON（body 含 config.expressions）
- *   2. 写用户 patch 层禁用 pet-roxy（profiles/web/cordis.patch.yml）→
- *      重启 → / 200 且 roxy 路由返回 SPA HTML（不再是插件 JSON）
- *   3. 移除禁用条目 → 重启 → roxy 恢复插件 JSON（往返稳定）
+ *   2. 追加**末位** --patch 禁用覆盖层（P46：rc.6 内核叠层顺序为
+ *      bundle → 用户层 → --patch 覆盖层，argv 顺序最后者胜；写在用户层的
+ *      disabled 条目会被插件自己的 insert 覆盖而失效，故壳以末位覆盖层
+ *      投递禁用）→ 重启 → / 200 且 roxy 路由返回 SPA HTML（不再是插件 JSON）
+ *   3. 撤掉禁用覆盖层 → 重启 → roxy 恢复插件 JSON（往返稳定）
  *
  * 判据说明：/dsh-pet-roxy/config 在未挂载时也返回 200（SPA 兜底路由），
  * 故以【响应体是否为插件 JSON】为挂载判据（规格 v7.1 的「404」判据已被
@@ -71,22 +73,21 @@ async function roxyMounted(port, expect, timeoutMs = 8000) {
   }
 }
 
-/** 写用户 patch 层（与 shell-core::write_user_patch_layer 同格式）。 */
-function writeUserPatchLayer(home, disabledIds) {
-  const p = path.join(home, 'profiles', 'web', 'cordis.patch.yml');
-  fs.mkdirSync(path.dirname(p), { recursive: true });
+/** 写壳格式的禁用覆盖层文件（与 shell-core::write_user_patch_layer 同格式）。 */
+function writeDisableOverlay(home, disabledIds) {
+  const p = path.join(home, 'ttshell-disabled.patch.yml');
   let body = '# verify-plugins 生成\n';
   body += disabledIds.length
     ? disabledIds.map((id) => `- id: ${id}\n  disabled: true\n`).join('')
     : '[]\n';
   fs.writeFileSync(p, body);
+  return p;
 }
 
-/** 启动内核（全插件 --patch）并等待就绪。 */
-async function startKernel(home) {
+/** 启动内核并等待就绪；patchArgs 为 --patch 参数序列（不含 --port）。 */
+async function startKernel(home, patchArgs) {
   const port = await freePort();
-  const patchRoxy = path.join(PLUGINS, 'dsh-pet-roxy', 'cordis.patch.yml');
-  const args = [BIN_JS, '--profile', 'web', '--patch', patchRoxy, '--port', String(port)];
+  const args = [BIN_JS, '--profile', 'web', ...patchArgs, '--port', String(port)];
   const child = spawn(KERNEL_NODE, args, {
     env: { ...process.env, DSH_HOME: home },
     stdio: ['ignore', 'ignore', 'pipe'],
@@ -128,30 +129,32 @@ async function main() {
   const home = path.join(tmp, 'dsh-home');
   const nm = path.join(home, 'node_modules');
   fs.mkdirSync(nm, { recursive: true });
+  const patchRoxy = path.join(PLUGINS, 'dsh-pet-roxy', 'cordis.patch.yml');
 
   // junction：valid 全集（与壳 discover→junction_targets 同布局）。
   mklinkJunction(path.join(nm, 'dsh-pet-roxy'), path.join(PLUGINS, 'dsh-pet-roxy'));
   check('junction 建立（dsh-pet-roxy）', fs.existsSync(path.join(nm, 'dsh-pet-roxy')));
 
   try {
-    // ---------- 1. 全启用（无禁用条目） ----------
-    writeUserPatchLayer(home, []);
-    let k = await startKernel(home);
+    // ---------- 1. 全启用（无禁用覆盖层） ----------
+    let k = await startKernel(home, ['--patch', patchRoxy]);
     let m = await roxyMounted(k.port, true);
     check('全启用：roxy 路由返回插件 JSON', m);
     await stopKernel(k.child);
 
-    // ---------- 2. 用户层禁用 pet-roxy ----------
-    writeUserPatchLayer(home, ['pet-roxy']);
-    k = await startKernel(home);
+    // ---------- 2. 末位禁用覆盖层（P46 机制） ----------
+    // roxyMounted(port,false) 在「路由已降级=禁用生效」时返回 true；
+    // 旧版此处写 !m，等于只有禁用失败（8s 超时）才判 PASS——历史假绿，
+    // 掩盖了 rc.6 用户层禁用失效（P46）。已修正。
+    const disableLayer = writeDisableOverlay(home, ['pet-roxy']);
+    k = await startKernel(home, ['--patch', patchRoxy, '--patch', disableLayer]);
     m = await roxyMounted(k.port, false);
     const probe = await getText(`http://127.0.0.1:${k.port}/`);
-    check('禁用 pet-roxy（用户层 disabled 条目）：路由降级为 SPA 兜底', !m && probe.status === 200, `root=${probe.status}`);
+    check('末位禁用覆盖层：路由降级为 SPA 兜底', m && probe.status === 200, `root=${probe.status}`);
     await stopKernel(k.child);
 
-    // ---------- 3. 再启用（移除禁用条目，往返稳定） ----------
-    writeUserPatchLayer(home, []);
-    k = await startKernel(home);
+    // ---------- 3. 再启用（撤掉禁用覆盖层，往返稳定） ----------
+    k = await startKernel(home, ['--patch', patchRoxy]);
     m = await roxyMounted(k.port, true);
     check('再启用：roxy 恢复插件 JSON', m);
     await stopKernel(k.child);

@@ -1,9 +1,12 @@
-//! 设置窗口 + Roxy 开关 + 防抖重启内核。
+//! 设置窗口 + 插件开关的防抖重启内核。
 //!
 //! - 设置窗口是壳自带的本地页面（ui-stub/settings.html），由托盘「设置…」打开；
-//! - Roxy 开关（托盘复选框 / 设置窗口）写 settings.json 后统一走
-//!   [`request_kernel_restart`]：3s 防抖（连续切换只重启最后一次）→
-//!   重算 --patch 参数 → 停内核 → 带新参数再拉起。
+//! - 插件开关（设置窗口）写 settings.json 后统一走 [`request_kernel_restart`]：
+//!   3s 防抖（连续切换只重启最后一次）→ 重算 --patch 参数 → 停内核 →
+//!   带新参数再拉起；
+//! - v8.2：页面宠物常开（用户明令），原 Roxy 开关（托盘复选框 / 设置窗口 /
+//!   `roxy_set` 命令）已整体移除；常开保证见 settings.rs `sanitize` 与
+//!   lib.rs `compute_mount_plan` 的双层防线。
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -38,36 +41,6 @@ pub fn open_settings_window(app: &AppHandle) {
     if let Err(e) = builder.build() {
         crate::logln!("[settings] create window failed: {e}");
     }
-}
-
-/// Roxy 开关入口（托盘复选框与设置窗口命令都走这里）。
-/// v8 语义：Roxy = 插件 `dsh-pet-roxy` 的开关，写 plugins.enabled 后防抖重启内核。
-///
-/// **必须用设置器而不是切换器**：muda 在 Windows 上于派发菜单事件**之前**
-/// 已经把 CheckMenuItem 的勾选反转了（muda-0.19.3 `platform_impl/windows/mod.rs`
-/// `MenuItemType::Check => item.set_checked(!item.checked)`），所以事件回调里
-/// 读到的 `is_checked()` 已经是「用户想要的新状态」。旧实现把这个新状态又交给
-/// 一个 toggle 语义的函数，等于连翻两次——勾选状态回到原样，托盘取消宠物无效。
-///
-/// 无论写入成功或失败，最后都把托盘勾选对齐到 `enabled`（唯一事实源收敛）。
-pub fn set_roxy_enabled(app: &AppHandle, enabled: bool) {
-    let Some(rt) = app.try_state::<Arc<KernelRuntime>>() else {
-        crate::logln!("[settings] roxy_set: runtime state missing");
-        return;
-    };
-    let mut s = shell_core::settings::read_settings(&rt.settings_path);
-    let before = shell_core::settings::roxy_enabled(&s);
-    crate::logln!("[settings] roxy_set: {before} -> {enabled}");
-    if before == enabled {
-        return; // 已一致（重复点击）：不重启内核。
-    }
-    shell_core::settings::set_plugin_enabled(&mut s, shell_core::settings::ROXY_PLUGIN_ID, enabled);
-    if let Err(e) = shell_core::settings::write_settings(&rt.settings_path, &s) {
-        crate::logln!("[settings] write failed: {e}");
-        return;
-    }
-    crate::logln!("[settings] roxy_set written; scheduling kernel restart");
-    request_kernel_restart(&rt);
 }
 
 /// 追加一行到 main.log（release 下 stderr 不可靠，诊断统一落盘）。

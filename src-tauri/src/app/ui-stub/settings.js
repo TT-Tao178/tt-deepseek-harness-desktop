@@ -314,8 +314,7 @@
     try {
       const s = JSON.parse(await core.invoke('settings_get'));
       $('close-behavior').value = s.close_behavior || 'ask';
-      const roxy = !(s.plugins && s.plugins.enabled && s.plugins.enabled['dsh-pet-roxy'] === false);
-      $('roxy-toggle').checked = roxy;
+      // v8.2：页面宠物常开，开关已移除（设置页与插件列表均为纯展示）。
     } catch (e) {
       note('g-note', 'g-note-text', `设置读取失败：${e}`, 'err');
     }
@@ -325,23 +324,6 @@
     const ok = await core.invoke('settings_set_close_behavior', { value: e.target.value });
     if (ok) note('g-note', 'g-note-text', '关闭行为已保存。', 'ok');
     else note('g-note', 'g-note-text', '保存失败。', 'err');
-  };
-
-  $('roxy-toggle').onchange = async (e) => {
-    const enabled = e.target.checked;
-    // 「应用中」态：直到内核重启+主窗刷新完成（kernel://reloaded）才解除。
-    $('roxy-toggle').disabled = true;
-    $('roxy-spin').style.display = '';
-    try {
-      await core.invoke('roxy_set', { enabled });
-      note('g-note', 'g-note-text',
-        enabled ? '已开启页面宠物，正在重启内核（约 3~10 秒，页面会自动刷新）…' : '已关闭页面宠物，正在重启内核（约 3~10 秒，页面会自动刷新）…', '');
-      waitApplied();
-    } catch (err) {
-      $('roxy-toggle').disabled = false;
-      $('roxy-spin').style.display = 'none';
-      note('g-note', 'g-note-text', `保存失败：${err}`, 'err');
-    }
   };
 
   // ---------- 服务状态 ----------
@@ -430,32 +412,39 @@
       const acts = document.createElement('div');
       acts.className = 'acts';
       if (p.valid) {
-        const sw = document.createElement('label');
-        sw.className = 'switch';
-        sw.title = p.enabled ? '点击禁用' : '点击启用';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = !!p.enabled;
-        const track = document.createElement('span');
-        track.className = 'track';
-        sw.appendChild(cb);
-        sw.appendChild(track);
-        cb.onchange = async () => {
-          cb.disabled = true;
-          const ok = await core.invoke('plugin_set_enabled', { id: p.id, enabled: cb.checked });
-          if (!ok) {
-            cb.disabled = false;
-            cb.checked = !cb.checked;
-            pNote('保存失败。', 'err');
-            return;
-          }
-          if (p.id === 'dsh-pet-roxy') $('roxy-toggle').checked = cb.checked;
-          // 保持禁用直到 kernel://reloaded（内核重启+页面刷新完成）。
-          pendingPlugins.set(p.id, cb);
-          pNote(`${p.id} 将${cb.checked ? '启用' : '禁用'}，正在重启内核（约 3~10 秒）…`, '');
-          waitApplied();
-        };
-        acts.appendChild(sw);
+        if (p.id === 'dsh-pet-roxy') {
+          // v8.2：页面宠物常开，不提供开关。
+          const tag = document.createElement('span');
+          tag.className = 'tag cur';
+          tag.textContent = '常开';
+          acts.appendChild(tag);
+        } else {
+          const sw = document.createElement('label');
+          sw.className = 'switch';
+          sw.title = p.enabled ? '点击禁用' : '点击启用';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = !!p.enabled;
+          const track = document.createElement('span');
+          track.className = 'track';
+          sw.appendChild(cb);
+          sw.appendChild(track);
+          cb.onchange = async () => {
+            cb.disabled = true;
+            const ok = await core.invoke('plugin_set_enabled', { id: p.id, enabled: cb.checked });
+            if (!ok) {
+              cb.disabled = false;
+              cb.checked = !cb.checked;
+              pNote('保存失败。', 'err');
+              return;
+            }
+            // 保持禁用直到 kernel://reloaded（内核重启+页面刷新完成）。
+            pendingPlugins.set(p.id, cb);
+            pNote(`${p.id} 将${cb.checked ? '启用' : '禁用'}，正在重启内核（约 3~10 秒）…`, '');
+            waitApplied();
+          };
+          acts.appendChild(sw);
+        }
       }
       if (p.source === 'user') {
         const rm = document.createElement('button');
@@ -504,9 +493,6 @@
     if (appliedTimer) { clearInterval(appliedTimer); appliedTimer = null; }
     for (const [, cb] of pendingPlugins) cb.disabled = false;
     pendingPlugins.clear();
-    $('roxy-toggle').disabled = false;
-    $('roxy-spin').style.display = 'none';
-    note('g-note', 'g-note-text', '已生效。', 'ok');
     pNote('已生效。', 'ok');
     Promise.all([refreshSettings(), refreshPlugins()]).catch(() => {});
   }
