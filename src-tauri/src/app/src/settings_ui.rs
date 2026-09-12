@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager, Wry};
 
-use crate::menu::TrayState;
 use crate::KernelRuntime;
 
 /// 防抖窗口：连续开关只触发最后一次重启。
@@ -53,42 +52,50 @@ pub fn open_settings_window(app: &AppHandle) {
 /// 无论写入成功或失败，最后都把托盘勾选对齐到 `enabled`（唯一事实源收敛）。
 pub fn set_roxy_enabled(app: &AppHandle, enabled: bool) {
     let Some(rt) = app.try_state::<Arc<KernelRuntime>>() else {
+        crate::logln!("[settings] roxy_set: runtime state missing");
         return;
     };
     let mut s = shell_core::settings::read_settings(&rt.settings_path);
     let before = shell_core::settings::roxy_enabled(&s);
+    crate::logln!("[settings] roxy_set: {before} -> {enabled}");
     if before == enabled {
-        // 已一致（重复点击 / 托盘与设置漂移）：只对齐勾选，不重启内核。
-        sync_tray_roxy(app, enabled);
-        return;
+        return; // 已一致（重复点击）：不重启内核。
     }
     shell_core::settings::set_plugin_enabled(&mut s, shell_core::settings::ROXY_PLUGIN_ID, enabled);
     if let Err(e) = shell_core::settings::write_settings(&rt.settings_path, &s) {
         crate::logln!("[settings] write failed: {e}");
-        sync_tray_roxy(app, before); // 写盘失败 → 勾选回到真实状态
         return;
     }
-    sync_tray_roxy(app, enabled);
+    crate::logln!("[settings] roxy_set written; scheduling kernel restart");
     request_kernel_restart(&rt);
 }
 
-/// 托盘复选框与实际设置状态对齐。
-pub fn sync_tray_roxy(app: &AppHandle, enabled: bool) {
-    if let Some(tray) = app.try_state::<TrayState>() {
-        let _ = tray.roxy_item.set_checked(enabled);
+/// 追加一行到 main.log（release 下 stderr 不可靠，诊断统一落盘）。
+fn main_log(rt: &KernelRuntime, msg: &str) {
+    let path = rt.app_data.join("logs").join("main.log");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = writeln!(f, "{msg}");
     }
 }
 
 /// 请求重启内核（3s 防抖，generation 计数，最后一次生效）。
 pub fn request_kernel_restart(rt: &Arc<KernelRuntime>) {
     let gen = rt.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    main_log(rt, &format!("[settings] kernel restart requested (gen {gen})"));
     let rt = rt.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(DEBOUNCE_MS));
         if rt.generation.load(Ordering::SeqCst) != gen {
+            main_log(&rt, "[settings] debounce superseded; skip");
             return; // 期间又有新的请求，放弃本次
         }
+        main_log(&rt, "[settings] debounce fired; recomputing mount and restarting kernel");
         recompute_and_restart(&rt);
+        main_log(&rt, "[settings] recompute_and_restart returned");
     });
 }
 

@@ -45,14 +45,20 @@ fn handle_close_request(window: &WebviewWindow, api: &CloseRequestApi) {
     }
 }
 
-/// 打开（或聚焦）关闭确认对话框窗口。
-fn open_close_dialog(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("close-dialog") {
-        let _ = w.set_focus();
+/// 关闭确认对话框：应用启动时**预创建并隐藏**（webview 已就绪），点 × 时
+/// 仅 show + 居中 + 聚焦——毫秒级出现，消除「现场新建 webview 的卡顿」与
+/// 置顶窗口切换的闪烁（P33）。选择完成后 hide 复用，不销毁。
+pub fn precreate_close_dialog(app: &AppHandle) {
+    if app.get_webview_window("close-dialog").is_some() {
         return;
     }
-    // 屏幕可用区域居中。
-    let builder = tauri::WebviewWindowBuilder::new(
+    if let Err(e) = build_close_dialog(app) {
+        crate::logln!("[close-dialog] precreate failed: {e}");
+    }
+}
+
+fn build_close_dialog(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    tauri::WebviewWindowBuilder::new(
         app,
         "close-dialog",
         tauri::WebviewUrl::App("close-dialog.html".into()),
@@ -62,11 +68,30 @@ fn open_close_dialog(app: &AppHandle) {
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
-    .always_on_top(true)
-    .decorations(true);
-    if let Err(e) = builder.build() {
-        eprintln!("[close-dialog] create failed: {e}");
-    }
+    // skip_taskbar：对话框不应在任务栏闪现图标；不再用 always_on_top
+    //（置顶窗口的创建/Z 序切换是视觉闪烁来源之一，P33）。
+    .skip_taskbar(true)
+    .decorations(true)
+    .visible(false)
+    .build()
+}
+
+/// 打开（或聚焦）关闭确认对话框。
+fn open_close_dialog(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("close-dialog") else {
+        // 预创建失败过（罕见）：退回现场创建并直接显示。
+        match build_close_dialog(app) {
+            Ok(w) => {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            Err(e) => crate::logln!("[close-dialog] create failed: {e}"),
+        }
+        return;
+    };
+    let _ = window.center();
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 /// 关闭对话框按钮入口（close-dialog.html 调用）。
@@ -80,7 +105,7 @@ pub fn close_dialog_action(app: AppHandle, action: String, remember: bool) {
             let mut s = shell_core::settings::read_settings(&rt.settings_path);
             shell_core::settings::set_close_behavior(&mut s, value);
             if let Err(e) = shell_core::settings::write_settings(&rt.settings_path, &s) {
-                eprintln!("[close-dialog] persist failed: {e}");
+                crate::logln!("[close-dialog] persist failed: {e}");
             }
         }
     };
@@ -93,21 +118,22 @@ pub fn close_dialog_action(app: AppHandle, action: String, remember: bool) {
                 let _ = w.hide();
             }
             if let Some(w) = app.get_webview_window("close-dialog") {
-                let _ = w.close();
+                let _ = w.hide(); // 复用，不销毁
             }
         }
         "quit" => {
             if remember {
                 persist("quit");
             }
+            // 先隐藏对话框再退出，减少销毁顺序上的视觉抖动（P33）。
             if let Some(w) = app.get_webview_window("close-dialog") {
-                let _ = w.close();
+                let _ = w.hide();
             }
             app.exit(0); // RunEvent::Exit 统一停内核
         }
         _ => {
             if let Some(w) = app.get_webview_window("close-dialog") {
-                let _ = w.close();
+                let _ = w.hide();
             }
         }
     }

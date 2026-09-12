@@ -329,11 +329,19 @@
 
   $('roxy-toggle').onchange = async (e) => {
     const enabled = e.target.checked;
+    // 「应用中」态：直到内核重启+主窗刷新完成（kernel://reloaded）才解除。
+    $('roxy-toggle').disabled = true;
     $('roxy-spin').style.display = '';
-    await core.invoke('roxy_set', { enabled });
-    $('roxy-spin').style.display = 'none';
-    note('g-note', 'g-note-text',
-      enabled ? '已开启 Roxy 桌宠，内核将在约 3 秒后重启生效。' : '已关闭 Roxy 桌宠，内核将在约 3 秒后重启生效。', 'ok');
+    try {
+      await core.invoke('roxy_set', { enabled });
+      note('g-note', 'g-note-text',
+        enabled ? '已开启页面宠物，正在重启内核（约 3~10 秒，页面会自动刷新）…' : '已关闭页面宠物，正在重启内核（约 3~10 秒，页面会自动刷新）…', '');
+      waitApplied();
+    } catch (err) {
+      $('roxy-toggle').disabled = false;
+      $('roxy-spin').style.display = 'none';
+      note('g-note', 'g-note-text', `保存失败：${err}`, 'err');
+    }
   };
 
   // ---------- 服务状态 ----------
@@ -435,14 +443,17 @@
         cb.onchange = async () => {
           cb.disabled = true;
           const ok = await core.invoke('plugin_set_enabled', { id: p.id, enabled: cb.checked });
-          cb.disabled = false;
           if (!ok) {
+            cb.disabled = false;
             cb.checked = !cb.checked;
             pNote('保存失败。', 'err');
             return;
           }
           if (p.id === 'dsh-pet-roxy') $('roxy-toggle').checked = cb.checked;
-          pNote(`${p.id} 将${cb.checked ? '启用' : '禁用'}，内核重启后生效（约 3~10 秒）。`, 'ok');
+          // 保持禁用直到 kernel://reloaded（内核重启+页面刷新完成）。
+          pendingPlugins.set(p.id, cb);
+          pNote(`${p.id} 将${cb.checked ? '启用' : '禁用'}，正在重启内核（约 3~10 秒）…`, '');
+          waitApplied();
         };
         acts.appendChild(sw);
       }
@@ -483,6 +494,32 @@
     else pNote(`导入失败：${res.error}`, 'err');
     refreshPlugins();
   };
+
+  // 「应用中」态登记表：内核重启+主窗刷新完成后统一解除。
+  // 双保险：kernel://reloaded 事件到达即解除；同时每秒轮询服务状态兜底
+  //（事件通道任何环节异常都不会把开关永久卡在「应用中」，P34）。
+  const pendingPlugins = new Map();
+  let appliedTimer = null;
+  function markApplied() {
+    if (appliedTimer) { clearInterval(appliedTimer); appliedTimer = null; }
+    for (const [, cb] of pendingPlugins) cb.disabled = false;
+    pendingPlugins.clear();
+    $('roxy-toggle').disabled = false;
+    $('roxy-spin').style.display = 'none';
+    note('g-note', 'g-note-text', '已生效。', 'ok');
+    pNote('已生效。', 'ok');
+    Promise.all([refreshSettings(), refreshPlugins()]).catch(() => {});
+  }
+  function waitApplied() {
+    if (appliedTimer) return;
+    appliedTimer = setInterval(async () => {
+      try {
+        const s = JSON.parse(await core.invoke('service_get_status'));
+        if (s.state === 'Ready') markApplied();
+      } catch { /* 下轮再试 */ }
+    }, 1000);
+  }
+  event.listen('kernel://reloaded', () => markApplied());
 
   event.listen('plugin://changed', () => refreshPlugins());
   event.listen('plugin://error', (ev) => pNote((ev.payload && ev.payload.error) || '操作失败。', 'err'));
