@@ -34,8 +34,17 @@ fn handle_close_request(window: &WebviewWindow, api: &CloseRequestApi) {
             let _ = window.hide();
             api.prevent_close();
         }
-        // quit：放行关闭；内核清理在 RunEvent::Exit 统一处理。
-        "quit" => {}
+        // quit：整体退出。注意不能简单放行——S2 引入的预创建隐藏窗口
+        // (close-dialog)会让「所有窗口已销毁」的判定永不成立,放行后应用
+        // 变成无窗托盘应用挂着(P44)。quit 语义 = 隐藏全部窗口 + 显式退出;
+        // 内核清理在 RunEvent::Exit 统一处理。
+        "quit" => {
+            let app = window.app_handle();
+            for w in app.webview_windows().values() {
+                let _ = w.hide();
+            }
+            app.exit(0);
+        }
         // ask（含未知值，回退默认 ask）：先阻止关闭，再弹三选项对话框
         // （退出到托盘 / 关闭程序 / 取消 + 「不再弹出询问」）。
         _ => {
@@ -125,9 +134,16 @@ pub fn close_dialog_action(app: AppHandle, action: String, remember: bool) {
             if remember {
                 persist("quit");
             }
-            // 先隐藏对话框再退出，减少销毁顺序上的视觉抖动（P33）。
-            if let Some(w) = app.get_webview_window("close-dialog") {
+            // P43:先隐藏所有窗口再退出——退出清理链(杀内核+WebView2 拆除)
+            // 需要零点几到两秒,期间用户看到的"关闭"应当即时完成。
+            if let Some(w) = app.get_webview_window("main") {
                 let _ = w.hide();
+            }
+            if let Some(w) = app.get_webview_window("settings") {
+                let _ = w.hide();
+            }
+            if let Some(w) = app.get_webview_window("close-dialog") {
+                let _ = w.hide(); // 复用,不销毁
             }
             app.exit(0); // RunEvent::Exit 统一停内核
         }

@@ -69,6 +69,11 @@ struct RealOps {
     port: u16,
     log_path: PathBuf,
     child_slot: Arc<Mutex<Option<Child>>>,
+    /// 常驻 Job:spawn 时 assign 内核树,kill 时 terminate(微秒级整树终结)。
+    /// KILL_ON_JOB_CLOSE 同时兜底「壳被强杀」的孤儿场景(P43)。
+    job: kernel_process::job_object::KillJob,
+    /// 最近一次 assign 是否成功(失败时 kill 回退 taskkill)。
+    job_assigned: std::cell::Cell<bool>,
 }
 
 impl KernelOps for RealOps {
@@ -98,6 +103,8 @@ impl KernelOps for RealOps {
         }
         let child = cmd.spawn().map_err(|e| format!("spawn kernel: {e}"))?;
         let pid = child.id();
+        // 纳入 Job:成功 → kill 走 terminate(微秒级);失败 → kill 回退 taskkill。
+        self.job_assigned.set(self.job.assign(&child).is_ok());
         *self.child_slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(child);
         Ok(pid)
     }
@@ -107,7 +114,16 @@ impl KernelOps for RealOps {
     }
 
     fn kill(&self, pid: u32) {
-        kernel_process::kill_tree::kill_tree(pid);
+        if self.job_assigned.get() {
+            // Job 内整树微秒级终结(比 taskkill /T /F 快 2 个数量级)。
+            self.job.terminate();
+        }
+        // 兜底:job 赋值失败的进程树仍用 taskkill。成功路径下这是一次
+        // 对已死进程的 no-op taskkill,开销可忽略……但实测有 ~200ms,
+        // 所以仅在未 assign 时才执行。
+        if !self.job_assigned.get() {
+            kernel_process::kill_tree::kill_tree(pid);
+        }
     }
 }
 
@@ -410,11 +426,23 @@ fn setup_kernel(app: &tauri::App) {
     };
     let spec_slot = Arc::new(Mutex::new(spec));
     let child_slot: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+    let job = match kernel_process::job_object::KillJob::create() {
+        Ok(j) => j,
+        Err(e) => {
+            crate::logln!("[kernel] Job Object create failed (kill falls back to taskkill): {e}");
+            kernel_process::job_object::KillJob::create().unwrap_or_else(|_| {
+                // 双重失败仅在非 Windows 编译时可能;Windows 上视为致命配置问题但继续运行。
+                kernel_process::job_object::KillJob::create().expect("KillJob::create")
+            })
+        }
+    };
     let ops = RealOps {
         spec_slot: spec_slot.clone(),
         port,
         log_path: paths.kernel_log(),
         child_slot: child_slot.clone(),
+        job,
+        job_assigned: std::cell::Cell::new(false),
     };
     let mut supervisor = Supervisor::new(Box::new(ops));
     supervisor.set_ready_port(port);

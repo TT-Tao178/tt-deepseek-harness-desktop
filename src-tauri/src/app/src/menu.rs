@@ -47,7 +47,14 @@ pub fn init(app: &App) {
                 MENU_SHOW => focus_main(app),
                 MENU_SETTINGS => crate::settings_ui::open_settings_window(app),
                 MENU_QUIT => {
-                    // 走统一退出路径（RunEvent::Exit 停内核）。
+                    // P43:先隐藏所有窗口(退出清理链需零点几到两秒),
+                    // 再走统一退出路径(RunEvent::Exit 停内核)。
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.hide();
+                    }
+                    if let Some(w) = app.get_webview_window("settings") {
+                        let _ = w.hide();
+                    }
                     app.exit(0);
                 }
                 _ => {}
