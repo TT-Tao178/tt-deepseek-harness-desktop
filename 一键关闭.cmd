@@ -2,6 +2,7 @@
 chcp 65001 >nul
 setlocal
 
+taskkill /IM tt-dsh-desktop.exe /F >nul 2>&1
 taskkill /IM tt-desktop-app.exe /F >nul 2>&1
 if %errorlevel%==0 (echo [OK] 应用已关闭) else (echo [..] 应用未在运行)
 

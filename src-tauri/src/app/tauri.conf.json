@@ -40,5 +40,6 @@
         "type": "embedBootstrapper"
       }
     }
-  }
+  },
+  "mainBinaryName": "tt-dsh-desktop"
 }
