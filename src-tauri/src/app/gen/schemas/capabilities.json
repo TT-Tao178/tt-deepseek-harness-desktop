@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"","remote":{"urls":["http://127.0.0.1","http://127.0.0.1:*"]},"local":true,"windows":["main","settings","close-dialog"],"permissions":["core:default","core:window:allow-start-dragging","dialog:default"]}}
+{"default":{"identifier":"default","description":"","remote":{"urls":["http://127.0.0.1","http://127.0.0.1:*"]},"local":true,"windows":["main","settings","close-dialog"],"permissions":["core:default","core:window:allow-start-dragging","dialog:default","dialog:allow-confirm","dialog:allow-ask"]}}

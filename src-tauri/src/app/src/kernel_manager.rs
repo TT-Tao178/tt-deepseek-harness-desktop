@@ -99,6 +99,24 @@ fn kernel_status_payload(rt: &KernelRuntime) -> serde_json::Value {
     })
 }
 
+/// 切换更新源（白名单校验 + 持久化）。
+/// 旧实现只在设置窗口里改了下拉框、并没有写盘，用户切到 npmjs 后其实还是走
+/// npmmirror——「检查更新」结果自然和预期不符。
+#[tauri::command]
+pub fn kernel_set_registry(
+    rt: tauri::State<'_, Arc<KernelRuntime>>,
+    registry: String,
+) -> Result<String, String> {
+    if shell_core::settings::registry_url(&registry).is_none() {
+        return Err(format!("不支持的更新源: {registry}"));
+    }
+    let mut s = shell_core::settings::read_settings(&rt.settings_path);
+    s.kernel.registry = registry.clone();
+    shell_core::settings::write_settings(&rt.settings_path, &s)?;
+    append_main_log(&rt, &format!("registry switched to {registry}"));
+    Ok(registry)
+}
+
 /// 检查更新（拉取官方注册表版本列表，事件 kernel://versions 回推）。
 #[tauri::command]
 pub fn kernel_check_updates(app: tauri::AppHandle, rt: tauri::State<'_, Arc<KernelRuntime>>) -> bool {
@@ -402,12 +420,20 @@ fn run_install(app: &AppHandle, rt: &Arc<KernelRuntime>, version: &str, cancel: 
     };
 
     // 4. 换名（SelfTest 已过）：正式 → 备份，staging → 正式。
+    //    换名前必须先停内核并等它退出：运行中的 node.exe 持有内核目录下
+    //    文件的句柄，Windows 上会让 `rename kernel → kernel-backup` 直接
+    //    失败（拒绝访问）。旧的 `recompute_and_restart` 把 stop 放在换名
+    //    之后，那条路径在 E_SEMVER 修好后就会踩到这个坑。
     emit(app, "kernel://progress", serde_json::json!({ "phase": "swapping", "version": version }));
+    append_main_log(rt, &format!("install {version}: stopping kernel before swap"));
+    settings_ui::stop_kernel(rt);
     let current = swap::read_kernel_version(&layout.kernel_dir);
     let backup_name = match swap::swap_in(&layout, &installed_version, current.as_deref()) {
         Ok(b) => b,
         Err(e) => {
             append_main_log(rt, &format!("install {version} swap failed: {e}"));
+            // 换名失败：正式内核未被改动，把内核拉回来，别让用户停在停机态。
+            settings_ui::compute_spec_and_start(rt);
             emit(app, "kernel://done", serde_json::json!({ "result": "failed", "error": e, "version": version }));
             return Err(e);
         }
@@ -415,21 +441,23 @@ fn run_install(app: &AppHandle, rt: &Arc<KernelRuntime>, version: &str, cancel: 
 
     // 5. 重启内核 + 健康等待；失败 → 回滚。
     emit(app, "kernel://progress", serde_json::json!({ "phase": "restarting", "version": version }));
-    settings_ui::recompute_and_restart(rt);
+    settings_ui::compute_spec_and_start(rt);
     if wait_kernel_ready(rt, Duration::from_secs(90)) {
         finish_install_success(app, rt, &installed_version);
         return Ok(());
     }
 
-    // 健康失败 → 自动回滚。
+    // 健康失败 → 自动回滚（同样先停内核再动目录）。
     emit(app, "kernel://progress", serde_json::json!({ "phase": "rollback", "version": version, "detail": format!("新内核启动失败，回滚到 {backup_name}") }));
     append_main_log(rt, &format!("install {version}: health failed after swap; rolling back to {backup_name}"));
+    settings_ui::stop_kernel(rt);
     if let Err(e) = swap::rollback_to(&layout, &backup_name) {
         append_main_log(rt, &format!("rollback failed: {e}"));
+        settings_ui::compute_spec_and_start(rt);
         emit(app, "kernel://done", serde_json::json!({ "result": "failed", "error": format!("回滚也失败: {e}"), "version": version }));
         return Err(e);
     }
-    settings_ui::recompute_and_restart(rt);
+    settings_ui::compute_spec_and_start(rt);
     let restored = wait_kernel_ready(rt, Duration::from_secs(90));
     if !restored {
         append_main_log(rt, "rollback restart also failed");
@@ -470,8 +498,13 @@ fn run_rollback(app: &AppHandle, rt: &Arc<KernelRuntime>, version: Option<&str>)
     };
     emit(app, "kernel://progress", serde_json::json!({ "phase": "rollback", "detail": format!("回滚到 {target}") }));
     append_main_log(rt, &format!("manual rollback to {target}"));
-    swap::rollback_to(&layout, &target)?;
-    settings_ui::recompute_and_restart(rt);
+    // 先停内核再动目录（同 run_install：运行中的进程会锁住 kernel/ 下的文件）。
+    settings_ui::stop_kernel(rt);
+    if let Err(e) = swap::rollback_to(&layout, &target) {
+        settings_ui::compute_spec_and_start(rt);
+        return Err(e);
+    }
+    settings_ui::compute_spec_and_start(rt);
     let ok = wait_kernel_ready(rt, Duration::from_secs(90));
     let mut s = shell_core::settings::read_settings(&rt.settings_path);
     s.kernel.installed_version = swap::read_kernel_version(&layout.kernel_dir);

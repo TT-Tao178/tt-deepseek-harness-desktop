@@ -75,7 +75,7 @@ pub fn plugin_set_enabled(
     let mut s = shell_core::settings::read_settings(&rt.settings_path);
     set_plugin_enabled(&mut s, &id, enabled);
     if let Err(e) = shell_core::settings::write_settings(&rt.settings_path, &s) {
-        eprintln!("[plugin] write settings failed: {e}");
+        crate::logln!("[plugin] write settings failed: {e}");
         return false;
     }
     if id == "dsh-pet-roxy" {
@@ -178,7 +178,7 @@ pub fn plugin_remove(
     let mut s = settings;
     s.plugins.enabled.remove(&id);
     if let Err(e) = shell_core::settings::write_settings(&rt.settings_path, &s) {
-        eprintln!("[plugin] write settings failed: {e}");
+        crate::logln!("[plugin] write settings failed: {e}");
         return false;
     }
 
@@ -190,7 +190,7 @@ pub fn plugin_remove(
         .join(&id);
     if junction.exists() {
         if let Err(e) = std::fs::remove_dir(&junction) {
-            eprintln!("[plugin] remove junction failed (will retry next restart): {e}");
+            crate::logln!("[plugin] remove junction failed (will retry next restart): {e}");
         }
     }
 
@@ -205,7 +205,7 @@ pub fn plugin_remove(
             .unwrap_or(0);
         let trash_dir = trash_root.join(format!("{id}-{ts}"));
         if let Err(e) = std::fs::rename(&dir, &trash_dir) {
-            eprintln!("[plugin] move to trash failed: {e}");
+            crate::logln!("[plugin] move to trash failed: {e}");
             // 移动失败不回滚设置：插件已禁用，重启后一致（目录残留下次可再移）。
         }
     }
