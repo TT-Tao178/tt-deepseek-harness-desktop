@@ -1,162 +1,312 @@
-// 设置窗口逻辑：内核管理 / 通用设置。走 window.__TAURI__ 全局 API（withGlobalTauri）。
+// 设置窗口逻辑：内核管理 / 插件管理 / 通用设置 / 服务状态。
+// 通过 window.__TAURI__ 全局 API（withGlobalTauri）直接调用壳命令。
 /* global window, document */
+//
+// ⚠ 不要用 window.confirm/alert：wry(WebView2) 不处理脚本对话框，调用会
+// **立即返回 undefined 且不弹任何框**（CDP 实证），导致「下载并安装」等
+// 按钮静默失效（P27）。确认类交互一律走 tauri-plugin-dialog 的
+// dialog.confirm（Rust 原生对话框，经命令通道，不依赖 WebView2 弹窗）。
 (() => {
-  const { core, event } = window.__TAURI__;
+  const { core, event, dialog } = window.__TAURI__;
   const $ = (id) => document.getElementById(id);
 
-  let selectedVersion = null;
-  let busy = false;
-
-  // ---------- 通用 ----------
-  function setBusy(v) {
-    busy = v;
-    $('btn-check').disabled = v;
-    $('btn-install').disabled = v || !selectedVersion;
-    $('btn-rollback').disabled = v || currentBackups.length === 0;
-    $('btn-restart').disabled = v;
-    $('btn-cancel').classList.toggle('hidden', !v);
+  // ---------- 小工具 ----------
+  let noteTimer = null;
+  /** 统一的状态条：kind ∈ '' | 'ok' | 'warn' | 'err' */
+  function note(boxId, textId, msg, kind) {
+    const box = $(boxId);
+    const el = $(textId);
+    if (!box || !el) return;
+    if (!msg) {
+      box.classList.remove('on', 'ok', 'warn', 'err');
+      return;
+    }
+    el.textContent = msg;
+    box.className = 'note on' + (kind ? ' ' + kind : '');
+    box.querySelector('.ic').textContent = kind === 'err' ? '!' : kind === 'ok' ? '✓' : kind === 'warn' ? '!' : '•';
+    if (noteTimer) clearTimeout(noteTimer);
+    if (kind === 'ok') {
+      noteTimer = setTimeout(() => box.classList.remove('on'), 6000);
+    }
   }
 
-  function status(text, cls) {
-    const el = $('k-status');
-    el.textContent = text || '';
-    el.className = 'status' + (cls ? ' ' + cls : '');
+  function relativeTime(epochSeconds) {
+    const s = Number(epochSeconds);
+    if (!s || Number.isNaN(s)) return '从未';
+    const diff = Math.floor(Date.now() / 1000 - s);
+    if (diff < 0) return '刚刚';
+    if (diff < 60) return `${diff} 秒前`;
+    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+    return `${Math.floor(diff / 86400)} 天前`;
   }
 
-  function progress(phase, pct) {
-    const box = $('k-progress');
-    const bar = $('k-progress-bar');
-    if (!phase) { box.style.display = 'none'; return; }
-    box.style.display = 'block';
-    const pctMap = { resolving: 2, downloading: pct || 5, extracting: 82, selftest: 92, swapping: 96, restarting: 98, rollback: 50 };
-    bar.style.width = (pctMap[phase] ?? 5) + '%';
+  function fmtDate(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
+
+  /** 语义化版本比较（仅用于排序/新旧判断，支持预发布）。 */
+  function parseVer(v) {
+    const m = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?$/.exec(String(v).trim());
+    if (!m) return null;
+    return { major: +m[1], minor: m[2] ? +m[2] : 0, patch: m[3] ? +m[3] : 0, pre: m[4] ? m[4].split('.') : [] };
+  }
+  function cmpVer(a, b) {
+    const x = parseVer(a); const y = parseVer(b);
+    if (!x || !y) return 0;
+    if (x.major !== y.major) return x.major - y.major;
+    if (x.minor !== y.minor) return x.minor - y.minor;
+    if (x.patch !== y.patch) return x.patch - y.patch;
+    if (!x.pre.length && !y.pre.length) return 0;
+    if (!x.pre.length) return 1;
+    if (!y.pre.length) return -1;
+    for (let i = 0; i < Math.min(x.pre.length, y.pre.length); i++) {
+      const p = x.pre[i]; const q = y.pre[i];
+      const pn = /^\d+$/.test(p); const qn = /^\d+$/.test(q);
+      if (pn && qn) { if (+p !== +q) return +p - +q; } else if (pn) return -1; else if (qn) return 1;
+      else if (p !== q) return p < q ? -1 : 1;
+    }
+    return x.pre.length - y.pre.length;
+  }
+
+  // ---------- 侧栏导航 ----------
+  function showView(name) {
+    document.querySelectorAll('.nav').forEach((b) => {
+      b.setAttribute('aria-selected', String(b.dataset.view === name));
+    });
+    document.querySelectorAll('.view').forEach((v) => v.classList.toggle('on', v.id === 'view-' + name));
+  }
+  document.querySelectorAll('.nav').forEach((b) => {
+    b.onclick = () => showView(b.dataset.view);
+  });
 
   // ---------- 内核状态 ----------
   let currentBackups = [];
+  let installedVersion = null;
+  let busy = false;
+
   async function refreshStatus() {
     try {
       const s = JSON.parse(await core.invoke('kernel_status'));
-      $('k-version').textContent = s.installed_version || '未知';
+      installedVersion = s.installed_version || null;
+      if (installedVersion) {
+        $('k-version').textContent = `内核 ${installedVersion}`;
+        $('k-version-hint').textContent = '内核为官方 @deepseek-ai/dsh；更新来自下方所选 npm 源';
+      } else {
+        $('k-version').textContent = '未能读取内核版本';
+        $('k-version-hint').textContent = '内核目录可能不完整，请查看 logs\\main.log';
+      }
       $('k-registry').value = s.registry || 'npmmirror';
       currentBackups = s.backups || [];
       $('k-backups').textContent = currentBackups.length
-        ? `备份：${currentBackups.join('、')}`
-        : '备份：暂无（首次更新成功后自动保留一份）';
+        ? `可回滚版本：${currentBackups.join('、')}`
+        : '暂无备份（首次更新成功后会自动保留一份）';
       $('btn-rollback').disabled = busy || currentBackups.length === 0;
+      $('d-checked').textContent = relativeTime(s.last_checked);
+      if (s.busy !== undefined) setBusy(s.busy);
     } catch (e) {
       $('k-version').textContent = '状态读取失败';
-      status(String(e), 'err');
+      note('k-note', 'k-note-text', String(e), 'err');
     }
+  }
+
+  // ---------- 忙闲与进度 ----------
+  function setBusy(v) {
+    busy = v;
+    $('btn-check').disabled = v;
+    $('btn-rollback').disabled = v || currentBackups.length === 0;
+    $('btn-restart').disabled = v;
+    $('btn-install').disabled = v || !selectedVersion;
+    $('btn-cancel').style.display = v ? '' : 'none';
+  }
+
+  const PHASE_TEXT = {
+    resolving: '解析依赖闭包',
+    downloading: '下载官方包',
+    extracting: '校验并解压',
+    selftest: '自检（临时端口试运行）',
+    swapping: '切换内核目录',
+    restarting: '重启内核',
+    rollback: '回滚中',
+  };
+  const PHASE_PCT = { resolving: 2, extracting: 82, selftest: 92, swapping: 96, restarting: 98, rollback: 45 };
+
+  function setProgress(pct, text) {
+    $('k-progress-row').style.display = '';
+    const p = Math.max(0, Math.min(100, Math.round(pct)));
+    $('k-bar').style.width = p + '%';
+    $('k-pct').textContent = p + '%';
+    if (text) $('k-phase').textContent = text;
+  }
+  function hideProgress() {
+    $('k-progress-row').style.display = 'none';
+    $('k-bar').style.width = '0%';
   }
 
   // ---------- 事件（Rust → UI） ----------
   event.listen('kernel://versions', (ev) => {
     setBusy(false);
+    hideProgress();
     const p = ev.payload || {};
-    if (p.error) { status(`检查更新失败：${p.error}`, 'err'); return; }
+    if (p.error) {
+      note('k-note', 'k-note-text', `检查更新失败：${p.error}`, 'err');
+      return;
+    }
     renderVersions(p);
-    status(`已获取版本列表（当前 ${p.current || '?'}），选择一个版本后点「下载并安装」。`, 'ok');
+    note('k-note', 'k-note-text', `已获取 ${(p.versions || []).length} 个版本（当前 ${p.current || '未知'}）。`, 'ok');
   });
 
   event.listen('kernel://progress', (ev) => {
     const p = ev.payload || {};
-    progress(p.phase, p.pct);
-    const extra = p.detail ? ` · ${p.detail}` : '';
-    const phaseText = {
-      resolving: '解析依赖', downloading: '下载', extracting: '解压摊平',
-      selftest: '自检（临时端口试运行）', swapping: '切换目录', restarting: '重启内核',
-      rollback: '回滚',
-    }[p.phase] || p.phase;
-    status(`${phaseText}${extra}`, '');
+    if (p.phase === 'downloading') {
+      setProgress(p.pct || 5, `下载官方包 ${p.i || 0}/${p.n || 0}`);
+      $('k-detail').textContent = p.detail ? String(p.detail) : '';
+      return;
+    }
+    if (p.phase === 'extracting') {
+      // 解压阶段报文很密，只在文字上体现进度。
+      $('k-phase').textContent = `校验并解压 ${p.i || ''}`.trim();
+      $('k-detail').textContent = p.detail ? String(p.detail) : '';
+      return;
+    }
+    setProgress(PHASE_PCT[p.phase] !== undefined ? PHASE_PCT[p.phase] : 5, PHASE_TEXT[p.phase] || p.phase);
+    $('k-detail').textContent = p.detail ? String(p.detail) : '';
   });
 
   event.listen('kernel://done', (ev) => {
     setBusy(false);
-    progress(null);
+    hideProgress();
     const p = ev.payload || {};
     if (p.result === 'installed') {
-      status(`已更新到 ${p.version}。可随时「回滚到上一版本」。`, 'ok');
+      note('k-note', 'k-note-text', `已更新到 ${p.version}。可随时回滚到上一版本。`, 'ok');
     } else if (p.result === 'rolled_back') {
-      status(p.restored ? `更新失败已自动回滚（${p.error}）` : `更新失败且回滚后内核未就绪，请查看日志。`, 'err');
+      note('k-note', 'k-note-text', p.restored
+        ? `新内核启动失败，已自动回滚：${p.error || ''}`
+        : '新内核启动失败，且回滚后内核未就绪，请查看 logs\\main.log', 'err');
     } else if (p.result === 'cancelled') {
-      status('已取消。', '');
+      note('k-note', 'k-note-text', '已取消，正式内核未被修改。', '');
     } else {
-      status(`失败：${p.error || '未知错误'}（详情见 logs/installer-*.log）`, 'err');
+      note('k-note', 'k-note-text', `更新失败：${p.error || '未知错误'}（详见 logs\\installer-*.log）`, 'err');
     }
     refreshStatus();
   });
 
   // ---------- 版本列表 ----------
+  let selectedVersion = null;
+
   function renderVersions(data) {
     const list = $('k-versions');
     list.innerHTML = '';
     selectedVersion = null;
     $('btn-install').disabled = true;
-    const versions = data.versions || [];
+    $('k-sel').textContent = '未选择版本';
+    $('k-panel').style.display = '';
+
+    const current = data.current || installedVersion;
+    const versions = (data.versions || []).slice().sort((a, b) => cmpVer(b.version, a.version));
+    // latest 取注册表的 dist-tags（镜像可能滞后，仅作标记用）
+    const latest = data.latest;
+
+    const head = document.createElement('div');
+    head.className = 'vhead';
+    head.innerHTML = `<span>版本</span><span style="margin-left:auto">发布时间</span>`;
+    list.appendChild(head);
+
     for (const v of versions) {
       const row = document.createElement('div');
       row.className = 'vitem';
       const tags = [];
-      if (v.version === data.current) tags.push('<span class="tag cur">当前</span>');
-      if (v.version === data.latest) tags.push('<span class="tag new">latest</span>');
-      row.innerHTML = `<span>${v.version}</span>${tags.join('')}<span style="margin-left:auto;color:#98a1ab;font-size:12px;">${(v.time || '').slice(0, 10)}</span>`;
+      if (v.version === current) tags.push('<span class="tag cur">当前</span>');
+      if (v.version === latest) tags.push('<span class="tag new">latest</span>');
+      if (current && cmpVer(v.version, current) > 0 && v.version !== latest && v.version !== current) {
+        tags.push('<span class="tag old">较新</span>');
+      }
+      row.innerHTML =
+        `<span class="radio"></span>` +
+        `<span class="ver">${v.version}</span>` +
+        tags.join('') +
+        `<span class="when">${fmtDate(v.time) || '-'}</span>`;
       row.onclick = () => {
         if (busy) return;
         list.querySelectorAll('.vitem').forEach((x) => x.classList.remove('sel'));
         row.classList.add('sel');
         selectedVersion = v.version;
         $('btn-install').disabled = false;
+        $('k-sel').textContent = v.version === current
+          ? `已选择 ${v.version}（与当前版本相同，重装将重新下载）`
+          : `已选择 ${v.version}`;
       };
       list.appendChild(row);
     }
-    list.classList.remove('hidden');
   }
 
-  // ---------- 按钮动作 ----------
+  // ---------- 内核按钮 ----------
   $('btn-check').onclick = async () => {
-    // 先保存所选源（下次检查生效）。
+    note('k-note', 'k-note-text', '', '');
+    setBusy(true);
+    setProgress(2, '正在连接注册表…');
     const ok = await core.invoke('kernel_check_updates');
-    if (!ok) status('已有更新任务在进行。', 'err');
-    else { setBusy(true); status('正在获取版本列表…', ''); }
+    if (!ok) {
+      setBusy(false);
+      hideProgress();
+      note('k-note', 'k-note-text', '已有更新任务正在进行。', 'warn');
+    }
   };
 
-  $('btn-install').onclick = () => {
+  $('btn-install').onclick = async () => {
     if (!selectedVersion) return;
-    if (!confirm(`安装内核 ${selectedVersion}？\n\n下载约 80~120MB；当前会话不受影响；新内核自检通过才会切换，失败自动回滚。`)) return;
-    const ok = core.invoke('kernel_install', { version: selectedVersion });
-    if (!ok) { status('已有更新任务在进行。', 'err'); return; }
+    const go = await dialog.confirm(
+      `安装内核 ${selectedVersion}？下载约 80~120MB，期间当前会话不受影响；` +
+      '新内核自检通过才会切换目录，启动失败会自动回滚到上一版本。',
+      { title: '安装内核', kind: 'info' }
+    );
+    if (!go) return;
     setBusy(true);
-    progress('resolving');
-    status('开始安装…', '');
+    note('k-note', 'k-note-text', '', '');
+    setProgress(0, '正在提交安装任务…');
+    const ok = await core.invoke('kernel_install', { version: selectedVersion });
+    if (!ok) {
+      setBusy(false);
+      hideProgress();
+      note('k-note', 'k-note-text', '已有更新任务正在进行。', 'warn');
+    }
   };
 
   $('btn-cancel').onclick = () => core.invoke('kernel_cancel');
 
-  $('btn-rollback').onclick = () => {
+  $('btn-rollback').onclick = async () => {
     const target = currentBackups[0];
     if (!target) return;
-    if (!confirm(`回滚到 ${target}？当前内核将被替换，内核会重启（约 5~15 秒）。`)) return;
-    const ok = core.invoke('kernel_rollback', { version: target });
-    if (!ok) { status('已有更新任务在进行。', 'err'); return; }
+    const go = await dialog.confirm(
+      `回滚到 ${target}？当前内核会被替换，内核将重启（约 5~15 秒）。`,
+      { title: '回滚内核', kind: 'warning' }
+    );
+    if (!go) return;
     setBusy(true);
-    status('回滚中…', '');
-  };
-
-  $('btn-restart').onclick = async () => {
-    $('btn-restart').disabled = true;
-    status('正在重启内核…', '');
-    try {
-      await core.invoke('service_restart');
-      status('内核已重启。', 'ok');
-    } catch (e) {
-      status(`重启失败：${e}`, 'err');
+    note('k-note', 'k-note-text', '', '');
+    setProgress(45, `正在回滚到 ${target}…`);
+    const ok = await core.invoke('kernel_rollback', { version: target });
+    if (!ok) {
+      setBusy(false);
+      hideProgress();
+      note('k-note', 'k-note-text', '已有更新任务正在进行。', 'warn');
     }
-    await Promise.all([refreshStatus(), refreshService()]);
   };
 
-  $('k-registry').onchange = (e) => {
-    status(`更新源已切换为 ${e.target.value}，下次检查更新生效。`, '');
+  // 更新源：立即写盘（旧实现只改下拉框不保存，切了也没用）
+  $('k-registry').onchange = async (e) => {
+    const value = e.target.value;
+    try {
+      await core.invoke('kernel_set_registry', { registry: value });
+      note('k-note', 'k-note-text', `更新源已切换为 ${value === 'npmjs' ? 'npmjs.org（官方源）' : 'npmmirror（国内镜像）'}，下次检查更新生效。`, 'ok');
+    } catch (err) {
+      note('k-note', 'k-note-text', `切换更新源失败：${err}`, 'err');
+      refreshStatus();
+    }
   };
 
   // ---------- 通用设置 ----------
@@ -164,106 +314,159 @@
     try {
       const s = JSON.parse(await core.invoke('settings_get'));
       $('close-behavior').value = s.close_behavior || 'ask';
-      const roxy = (s.plugins && s.plugins.enabled && s.plugins.enabled['dsh-pet-roxy']);
-      $('roxy-toggle').checked = roxy !== false; // 默认开
+      const roxy = !(s.plugins && s.plugins.enabled && s.plugins.enabled['dsh-pet-roxy'] === false);
+      $('roxy-toggle').checked = roxy;
     } catch (e) {
-      status(`设置读取失败：${e}`, 'err');
+      note('g-note', 'g-note-text', `设置读取失败：${e}`, 'err');
     }
   }
 
   $('close-behavior').onchange = async (e) => {
     const ok = await core.invoke('settings_set_close_behavior', { value: e.target.value });
-    if (!ok) status('保存失败。', 'err');
+    if (ok) note('g-note', 'g-note-text', '关闭行为已保存。', 'ok');
+    else note('g-note', 'g-note-text', '保存失败。', 'err');
   };
 
-  $('roxy-toggle').onchange = (e) => {
-    core.invoke('roxy_set', { enabled: e.target.checked });
+  $('roxy-toggle').onchange = async (e) => {
+    const enabled = e.target.checked;
+    $('roxy-spin').style.display = '';
+    await core.invoke('roxy_set', { enabled });
+    $('roxy-spin').style.display = 'none';
+    note('g-note', 'g-note-text',
+      enabled ? '已开启 Roxy 桌宠，内核将在约 3 秒后重启生效。' : '已关闭 Roxy 桌宠，内核将在约 3 秒后重启生效。', 'ok');
+  };
+
+  // ---------- 服务状态 ----------
+  const STATE_TEXT = {
+    Ready: ['运行中', 'ok'], Starting: ['启动中', 'warn'], Crashed: ['已崩溃 · 等待重启', 'err'],
+    Stopped: ['已停止', ''], Exhausted: ['重启次数耗尽', 'err'],
   };
 
   async function refreshService() {
     try {
       const s = JSON.parse(await core.invoke('service_get_status'));
-      $('svc-status').textContent = `状态 ${s.state} · 端口 ${s.port ?? '-'}`;
+      const [text, kind] = STATE_TEXT[s.state] || [s.state || '未知', ''];
+      $('svc-text').textContent = text;
+      $('svc-pill').className = 'pill' + (kind ? ' ' + kind : '');
+      $('svc-state').innerHTML = `<span class="pill ${kind}"><span class="dot"></span>${text}</span>`;
+      $('svc-port').textContent = s.port ? String(s.port) : '-';
     } catch {
-      $('svc-status').textContent = '状态读取失败';
+      $('svc-text').textContent = '状态读取失败';
+      $('svc-pill').className = 'pill err';
+      $('svc-state').innerHTML = '<span class="pill err"><span class="dot"></span>读取失败</span>';
     }
   }
 
+  $('btn-restart').onclick = async () => {
+    $('btn-restart').disabled = true;
+    $('svc-text').textContent = '正在重启…';
+    $('svc-pill').className = 'pill warn';
+    try {
+      await core.invoke('service_restart');
+    } catch (e) {
+      note('k-note', 'k-note-text', `重启失败：${e}`, 'err');
+    }
+    // 内核就绪需要几秒，轮询几次把状态刷出来。
+    let n = 0;
+    const tick = async () => {
+      await refreshService();
+      n += 1;
+      const ready = $('svc-text').textContent === '运行中';
+      if (!ready && n < 12) setTimeout(tick, 800);
+      else $('btn-restart').disabled = false;
+    };
+    setTimeout(tick, 600);
+  };
+
   // ---------- 插件管理 ----------
+  function pNote(msg, kind) {
+    note('p-note', 'p-note-text', msg, kind);
+  }
+
   async function refreshPlugins() {
     const box = $('p-list');
     let list;
     try {
       list = JSON.parse(await core.invoke('plugin_list'));
     } catch (e) {
-      box.innerHTML = `<div class="row"><span class="status err">插件列表读取失败：${e}</span></div>`;
+      box.innerHTML = `<div class="empty">插件列表读取失败：${e}</div>`;
       return;
     }
     if (!list.length) {
-      box.innerHTML = '<div class="row"><span class="status">未发现插件。</span></div>';
+      box.innerHTML = '<div class="empty">未发现插件。</div>';
       return;
     }
     box.innerHTML = '';
     for (const p of list) {
       const row = document.createElement('div');
-      row.className = 'prow';
+      row.className = 'plug' + (p.valid ? '' : ' bad');
+      const initial = (p.id.replace(/^@[^/]+\//, '')[0] || '?').toUpperCase();
       const srcTag = p.source === 'bundled' ? '内置' : '导入';
       const meta = [p.version, srcTag].filter(Boolean).join(' · ');
-      if (!p.valid) {
-        row.innerHTML = `
-          <div>
-            <div class="pid">${p.id} <span class="tag bad">异常</span></div>
-            <div class="pbad">${p.invalid_reason || '校验失败'}</div>
-          </div>
-          <div class="spacer"></div>`;
-        if (p.source === 'user') {
-          const rm = document.createElement('button');
-          rm.className = 'danger';
-          rm.textContent = '移除';
-          rm.onclick = () => removePlugin(p.id);
-          row.querySelector('.spacer').appendChild(rm);
-        }
+
+      const info = document.createElement('div');
+      info.className = 'grow';
+      info.style.minWidth = '0';
+      if (p.valid) {
+        info.innerHTML =
+          `<div class="label">${p.id}</div>` +
+          `<div class="meta">${meta}${p.description ? ' — ' + p.description : ''}</div>`;
       } else {
-        row.innerHTML = `
-          <div>
-            <div class="pid">${p.id}</div>
-            <div class="pmeta">${meta}${p.description ? ' — ' + p.description : ''}</div>
-          </div>
-          <div class="spacer">
-            <label class="pmeta"><input type="checkbox" class="pswitch" ${p.enabled ? 'checked' : ''}> 启用</label>
-          </div>`;
-        const sw = row.querySelector('.pswitch');
-        sw.onchange = async () => {
-          sw.disabled = true;
-          const ok = await core.invoke('plugin_set_enabled', { id: p.id, enabled: sw.checked });
-          sw.disabled = false;
-          pStatus(ok ? `${p.id} 将${sw.checked ? '启用' : '禁用'}（内核重启后生效，约 3~10 秒）` : '保存失败。', ok ? '' : 'err');
-          if (p.id === 'dsh-pet-roxy') $('roxy-toggle').checked = sw.checked;
-        };
-        if (p.source === 'user') {
-          const spacer = row.querySelector('.spacer');
-          const rm = document.createElement('button');
-          rm.className = 'danger';
-          rm.textContent = '移除';
-          rm.onclick = () => removePlugin(p.id);
-          spacer.insertBefore(rm, spacer.firstChild);
-        }
+        info.innerHTML =
+          `<div class="label">${p.id} <span class="tag bad">异常</span></div>` +
+          `<div class="why">${p.invalid_reason || '校验失败'}</div>`;
       }
+      row.innerHTML = `<div class="avatar">${initial}</div>`;
+      row.appendChild(info);
+
+      const acts = document.createElement('div');
+      acts.className = 'acts';
+      if (p.valid) {
+        const sw = document.createElement('label');
+        sw.className = 'switch';
+        sw.title = p.enabled ? '点击禁用' : '点击启用';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!p.enabled;
+        const track = document.createElement('span');
+        track.className = 'track';
+        sw.appendChild(cb);
+        sw.appendChild(track);
+        cb.onchange = async () => {
+          cb.disabled = true;
+          const ok = await core.invoke('plugin_set_enabled', { id: p.id, enabled: cb.checked });
+          cb.disabled = false;
+          if (!ok) {
+            cb.checked = !cb.checked;
+            pNote('保存失败。', 'err');
+            return;
+          }
+          if (p.id === 'dsh-pet-roxy') $('roxy-toggle').checked = cb.checked;
+          pNote(`${p.id} 将${cb.checked ? '启用' : '禁用'}，内核重启后生效（约 3~10 秒）。`, 'ok');
+        };
+        acts.appendChild(sw);
+      }
+      if (p.source === 'user') {
+        const rm = document.createElement('button');
+        rm.className = 'btn sm danger';
+        rm.textContent = '移除';
+        rm.onclick = () => removePlugin(p.id);
+        acts.appendChild(rm);
+      }
+      row.appendChild(acts);
       box.appendChild(row);
     }
   }
 
-  function pStatus(text, cls) {
-    const el = $('p-status');
-    el.textContent = text || '';
-    el.className = 'status' + (cls ? ' ' + cls : '');
-  }
-
   async function removePlugin(id) {
-    if (!confirm(`移除插件 ${id}？\n\n（目录会移入 plugin-trash，可手工恢复）`)) return;
+    const go = await dialog.confirm(
+      `移除插件 ${id}？目录会被移动到 plugin-trash，可手工恢复。`,
+      { title: '移除插件', kind: 'warning' }
+    );
+    if (!go) return;
     const ok = await core.invoke('plugin_remove', { id });
-    if (ok) pStatus(`${id} 已移除。`, 'ok');
-    else pStatus('移除失败（内置插件不可移除，或文件被占用）。', 'err');
+    if (ok) pNote(`${id} 已移除（可在 plugin-trash 找回）。`, 'ok');
+    else pNote('移除失败（内置插件不可移除，或文件被占用）。', 'err');
     refreshPlugins();
   }
 
@@ -274,18 +477,19 @@
       title: '选择插件目录（需含 package.json 与 cordis.patch.yml）',
     });
     if (!selected) return;
-    pStatus('导入中…', '');
+    pNote('导入中…', '');
     const res = JSON.parse(await core.invoke('plugin_import', { path: selected }));
-    if (res.ok) pStatus(`已导入 ${res.id}（默认禁用，开启后生效）。`, 'ok');
-    else pStatus(`导入失败：${res.error}`, 'err');
+    if (res.ok) pNote(`已导入 ${res.id}（默认禁用，开启后生效）。`, 'ok');
+    else pNote(`导入失败：${res.error}`, 'err');
     refreshPlugins();
   };
 
   event.listen('plugin://changed', () => refreshPlugins());
-  event.listen('plugin://error', (ev) => pStatus(ev.payload && ev.payload.error || '操作失败。', 'err'));
+  event.listen('plugin://error', (ev) => pNote((ev.payload && ev.payload.error) || '操作失败。', 'err'));
 
   // ---------- 启动 ----------
   setBusy(false);
+  hideProgress();
   refreshStatus();
   refreshSettings();
   refreshService();

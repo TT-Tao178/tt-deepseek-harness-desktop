@@ -7,7 +7,7 @@ pub mod window;
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,6 +20,10 @@ use supervisor::{HealthResult, KernelOps, KernelState, Supervisor};
 pub struct KernelRuntime {
     pub spec_slot: Arc<Mutex<kernel_process::spawn_spec::KernelSpec>>,
     pub supervisor: Arc<Mutex<Supervisor>>,
+    /// 内核子进程句柄（RealOps spawn 时写入）。stop_kernel 用它等待
+    /// 进程**真正退出**——kill_tree 之后 Windows 释放可执行文件锁有延迟，
+    /// 换名（kernel/ → kernel-backup/）必须等锁消失（P30）。
+    pub child_slot: Arc<Mutex<Option<Child>>>,
     pub app_data: PathBuf,
     pub settings_path: PathBuf,
     pub app_root: Option<PathBuf>,
@@ -29,9 +33,11 @@ pub struct KernelRuntime {
 
 impl KernelRuntime {
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         spec_slot: Arc<Mutex<kernel_process::spawn_spec::KernelSpec>>,
         supervisor: Arc<Mutex<Supervisor>>,
+        child_slot: Arc<Mutex<Option<Child>>>,
         app_data: PathBuf,
         settings_path: PathBuf,
         app_root: Option<PathBuf>,
@@ -40,6 +46,7 @@ impl KernelRuntime {
         KernelRuntime {
             spec_slot,
             supervisor,
+            child_slot,
             app_data,
             settings_path,
             app_root,
@@ -246,6 +253,20 @@ fn apply_plugin_mount(
     }
 }
 
+
+/// stderr 输出（忽略写入失败）。
+///
+/// GUI 进程（windows_subsystem=windows）的 stderr 可能是空设备或已断开的
+/// 管道；`eprintln!` 在写失败时会 **panic 并杀死调用线程**——poll 线程一旦
+/// 被杀，崩溃自愈与页面重载全部静默失效（P31）。所有运行期诊断一律走本函数。
+#[macro_export]
+macro_rules! logln {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        let _ = std::io::stderr().write_all(format!($($arg)*).as_bytes());
+    }};
+}
+
 /// 追加一行到日志文件（失败静默，不 panic）。
 fn append_log(path: &Path, msg: &str) {
     use std::io::Write;
@@ -291,7 +312,7 @@ fn settings_get(state: tauri::State<'_, Arc<KernelRuntime>>) -> String {
 
 #[tauri::command]
 fn roxy_set(app: tauri::AppHandle, enabled: bool) {
-    settings_ui::toggle_roxy(&app, enabled);
+    settings_ui::set_roxy_enabled(&app, enabled);
 }
 
 #[tauri::command]
@@ -305,7 +326,7 @@ fn settings_set_close_behavior(
     let changed = s.close_behavior != before;
     if changed {
         if let Err(e) = shell_core::settings::write_settings(&state.settings_path, &s) {
-            eprintln!("[settings] write close_behavior failed: {e}");
+            logln!("[settings] write close_behavior failed: {e}");
             return false;
         }
     }
@@ -322,7 +343,7 @@ fn setup_kernel(app: &tauri::App) {
     let app_data = match app.path().app_data_dir() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("[setup] app_data_dir failed: {e}");
+            logln!("[setup] app_data_dir failed: {e}");
             return;
         }
     };
@@ -330,7 +351,7 @@ fn setup_kernel(app: &tauri::App) {
     // --- a. 日志目录 + DSH_HOME ---
     let logs_dir = app_data.join("logs");
     if let Err(e) = std::fs::create_dir_all(&logs_dir) {
-        eprintln!("[setup] create logs dir failed: {e}");
+        logln!("[setup] create logs dir failed: {e}");
     }
     let main_log = logs_dir.join("main.log");
     let dsh_home = app_data.join("dsh-home");
@@ -401,6 +422,7 @@ fn setup_kernel(app: &tauri::App) {
     let runtime = Arc::new(KernelRuntime::new(
         spec_slot,
         supervisor.clone(),
+        child_slot.clone(),
         app_data.clone(),
         settings_path,
         app_root,
@@ -420,21 +442,34 @@ fn setup_kernel(app: &tauri::App) {
         Ok(()) => append_log(&main_log, &format!("[setup] kernel spawn requested on port {port}")),
         Err(e) => append_log(&main_log, &format!("[setup] kernel start failed: {e}")),
     }
-    spawn_poll_thread(app.handle().clone(), supervisor, child_slot);
+    spawn_poll_thread(app.handle().clone(), supervisor, child_slot, paths.kernel_log());
 
     // --- f. 托盘（Roxy 勾选状态与设置一致）---
-    menu::init(app, settings.roxy.enabled);
+    // 必须从 plugins.enabled 判定：legacy 的 `roxy.enabled` 是 skip_serializing，
+    // 首次写回后恒为默认值，用它初始化会让托盘勾选与真实状态不符。
+    menu::init(app, shell_core::settings::roxy_enabled(&settings));
 }
 
 /// 一个 poll 线程，每 200ms：Starting/Ready 时检测进程退出（try_wait → on_exit）
 /// 并 poll_health；Crashed 时调 restart（内部等待退避延迟）。
-/// 首次 Ready 时把主窗口导航到内核页面（ui-stub 启动页被替换）。
+///
+/// 主窗口（重）导航时机（P28）：
+/// - 首次 Ready：导航到内核 URL（启动页被替换）；
+/// - **Ready 边沿**（上一轮不是 Ready、这一轮 Ready）：说明内核经历了一次
+///   重启（Roxy/插件开关、service_restart、内核更新、回滚）。此时必须把
+///   主窗口**重新导航**——旧页面里已注入的插件脚本（如宠物）不会因为内核
+///   重启而消失，不重载用户就会看到「开关没用」；同时新内核（0.1.5+）的
+///   地址带一次性 token，裸 URL 会 401，所以重导航的 URL 从 kernel.log 的
+///   `dsh web:` 行提取（P29）。
 fn spawn_poll_thread(
     handle: tauri::AppHandle,
     sup_state: Arc<Mutex<Supervisor>>,
     child_slot: Arc<Mutex<Option<Child>>>,
+    kernel_log: PathBuf,
 ) {
-    let navigated = Arc::new(AtomicBool::new(false));
+    let mut nav: Option<(String, u64)> = None; // 主窗导航状态（见 navigate_main_to_kernel）
+    // Ready 边沿检测：只有「非 Ready → Ready」的跳变才触发（重）导航。
+    let mut was_ready = false;
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(200));
         let mut sup = lock(&sup_state);
@@ -448,52 +483,132 @@ fn spawn_poll_thread(
                         }
                     }
                 }
+                let port = sup.ready_port();
                 match sup.poll_health() {
                     HealthResult::Ready => {
-                        if !navigated.swap(true, Ordering::Relaxed) {
-                            navigate_main_to_kernel(&handle, sup.ready_port());
+                        if nav.is_none() {
+                            navigate_main_to_kernel(&handle, port, &kernel_log, &mut nav);
+                        } else if !was_ready {
+                            // 内核重启后的 Ready 边沿：主窗必须重载，
+                            // 否则旧页面里已注入的插件（宠物）不会消失（P28）。
+                            logln!("[kernel-supervisor] kernel restart detected; reloading main window");
+                            navigate_main_to_kernel(&handle, port, &kernel_log, &mut nav);
                         }
+                        was_ready = true;
                     }
                     HealthResult::Crashed => {
-                        eprintln!("[kernel-supervisor] kernel crashed; scheduling restart")
+                        was_ready = false;
+                        logln!("[kernel-supervisor] kernel crashed; scheduling restart")
                     }
                     HealthResult::Exhausted => {
-                        eprintln!("[kernel-supervisor] kernel backoff exhausted")
+                        was_ready = false;
+                        logln!("[kernel-supervisor] kernel backoff exhausted")
                     }
-                    HealthResult::StillStarting => {}
+                    HealthResult::StillStarting => {
+                        was_ready = false;
+                    }
                 }
             }
             KernelState::Crashed => {
+                was_ready = false;
                 if let Err(e) = sup.restart() {
-                    eprintln!("[kernel-supervisor] restart failed: {e}");
+                    logln!("[kernel-supervisor] restart failed: {e}");
                 }
             }
             KernelState::Stopped | KernelState::Exhausted => {
+                was_ready = false;
                 drop(sup);
                 std::thread::sleep(Duration::from_millis(500));
+                continue;
             }
         }
     });
 }
 
-/// 主窗口导航到内核 Web UI（仅首次 Ready 调用一次）。
-fn navigate_main_to_kernel(handle: &tauri::AppHandle, port: Option<u16>) {
+/// 从 kernel.log 的 `[min_offset,)` 区间提取内核 Web 地址
+/// （最后一条 `dsh web:` 且端口匹配的行）。
+///
+/// 返回 (url, 匹配行之后的文件偏移)。新版内核（0.1.5+）对根路径加了 token
+/// 鉴权，启动时把带 token 的完整地址打到 stdout（`dsh web:
+/// http://127.0.0.1:<port>/?token=...`）；旧版打印无 token 地址。kernel.log
+/// 追加写、跨多次启动：用偏移区间保证读到的是**本次启动**打印的行，而不是
+/// 上一个进程留下的旧行（旧 token 已失效，拿去导航必 401）。
+fn kernel_web_url_from_log(kernel_log: &Path, port: u16, min_offset: u64) -> Option<(String, u64)> {
+    let raw = std::fs::read(kernel_log).ok()?;
+    let fresh = raw.get(min_offset as usize..).unwrap_or(&[]);
+    let marker = format!("127.0.0.1:{port}");
+    let text = String::from_utf8_lossy(fresh);
+    let mut found = None;
+    let mut consumed = min_offset;
+    for line in text.lines() {
+        let line_start = consumed;
+        consumed += line.len() as u64 + 1; // 近似行宽（含换行），够定位用
+        if line.contains("dsh web:") && line.contains(&marker) {
+            if let Some(url) = line.rsplit("dsh web:").next().map(str::trim) {
+                if url.starts_with("http://") {
+                    found = Some((url.to_string(), line_start + line.len() as u64));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// 主窗口（重）导航到内核 Web UI。
+///
+/// - `nav`（线程内持有的状态）：None=首次导航；Some((上次 url, 上次日志偏移))
+///   =内核重启后的重导航——只认日志里**新产生**的行（偏移之后），避免拿到
+///   上一进程的旧 token；6 秒内没等到新行就退回裸 URL / 原 URL 重载。
+fn navigate_main_to_kernel(
+    handle: &tauri::AppHandle,
+    port: Option<u16>,
+    kernel_log: &Path,
+    nav: &mut Option<(String, u64)>,
+) {
     let Some(port) = port else { return };
     let Some(window) = handle.get_webview_window("main") else {
         return;
     };
-    let url = format!("http://127.0.0.1:{port}/");
+    let plain = format!("http://127.0.0.1:{port}/");
+    let min_offset = nav.as_ref().map(|(_, off)| *off).unwrap_or(0);
+
+    // 最多 ~6s：内核通常在端口可连前后就把 `dsh web:` 行打出来了。
+    let mut resolved = None;
+    for _ in 0..30 {
+        if let Some((url, off)) = kernel_web_url_from_log(kernel_log, port, min_offset) {
+            resolved = Some((url, off));
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let (url, off) = resolved.unwrap_or_else(|| {
+        let fallback = nav.as_ref().map(|(u, _)| u.clone()).unwrap_or_else(|| plain.clone());
+        (fallback, min_offset)
+    });
+
+    let is_reload = nav.as_ref().map(|(u, _)| *u == url).unwrap_or(false);
+    *nav = Some((url.clone(), off));
+
+    if is_reload {
+        // 同地址（如旧版内核重启，行里没有变化）：直接刷新页面即可。
+        if let Err(e) = window.eval("location.reload()") {
+            logln!("[window] reload failed: {e}");
+        } else {
+            logln!("[window] main window reloaded ({url})");
+        }
+        return;
+    }
     match tauri::Url::parse(&url) {
         Ok(u) => {
             if let Err(e) = window.navigate(u) {
-                eprintln!("[window] navigate failed ({url}): {e}");
+                logln!("[window] navigate failed ({url}): {e}");
                 // 兜底：让页面自己跳过去。
                 let _ = window.eval(&format!("location.replace('{url}')"));
             } else {
-                eprintln!("[window] navigated to {url}");
+                logln!("[window] navigated to {url}");
             }
         }
-        Err(e) => eprintln!("[window] bad url {url}: {e}"),
+        Err(e) => logln!("[window] bad url {url}: {e}"),
     }
 }
 
@@ -516,6 +631,7 @@ pub fn run() {
             settings_set_close_behavior,
             roxy_set,
             kernel_manager::kernel_status,
+            kernel_manager::kernel_set_registry,
             kernel_manager::kernel_check_updates,
             kernel_manager::kernel_install,
             kernel_manager::kernel_cancel,

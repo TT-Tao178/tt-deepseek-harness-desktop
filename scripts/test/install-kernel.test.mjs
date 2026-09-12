@@ -108,6 +108,85 @@ test('semver: rc 排序与升级判定', () => {
   assert.ok(!satisfies('1.0.0', '||') === false || true);
 });
 
+test('semver: 部分版本范围（^4 / ~4 / >=4）—— P21 回归', () => {
+  const { parseVer, satisfies } = installer;
+  // 部分版本必须解析为「缺失段补 0」，否则 ^4 永远匹配不到任何版本。
+  assert.equal(parseVer('4').major, 4);
+  assert.equal(parseVer('4').minor, 0);
+  assert.equal(parseVer('4').patch, 0);
+  assert.equal(parseVer('4.1').minor, 1);
+  assert.equal(parseVer('4.1').patch, 0);
+  assert.equal(parseVer('4').partial, 1, '显式段数决定 ~ 的上界');
+  assert.equal(parseVer('4.1').partial, 2);
+
+  // 真实内核闭包里的实际写法：object-assign@^4 曾让整个更新中断在 E_SEMVER。
+  assert.ok(satisfies('4.1.1', '^4'), 'object-assign@^4 必须匹配 4.1.1');
+  assert.ok(satisfies('4.0.0', '^4'));
+  assert.ok(!satisfies('5.0.0', '^4'), '^4 不得跨主版本');
+
+  // ~ 只看显式段：~4 = 4.x，~4.1 = 4.1.x。
+  assert.ok(satisfies('4.5.9', '~4'), '~4 覆盖整个 4.x');
+  assert.ok(!satisfies('5.0.0', '~4'));
+  assert.ok(satisfies('4.1.9', '~4.1'));
+  assert.ok(!satisfies('4.2.0', '~4.1'), '~4.1 不得跨次版本');
+
+  assert.ok(satisfies('4.1.1', '>=4'));
+  assert.ok(!satisfies('3.9.0', '>=4'));
+
+  // 0.x 的 ^ 语义：^0.1 = 0.1.x（显式段决定上界）。
+  assert.ok(satisfies('0.1.5', '^0.1'));
+  assert.ok(!satisfies('0.2.0', '^0.1'));
+  assert.ok(satisfies('0.0.3', '^0.0.3'));
+  assert.ok(!satisfies('0.0.4', '^0.0.3'));
+});
+
+test('semver: 与 npm semver 差分对照（范围语义的黄金判据）', () => {
+  // 安装器必须零依赖（不能 require('semver')），但**测试**可以用官方实现当
+  // 差分基准：手写的范围语义只有这样才证明得了「和 npm 一致」。
+  // 复现 P21/P23 —— 闭包解析曾连续中断在 `^4` 与 `>= 2.1.2 < 3.0.0` 两种写法上。
+  let oracle;
+  try {
+    oracle = require('semver');
+  } catch {
+    console.log('  (跳过：未安装 semver，无法做差分对照)');
+    return;
+  }
+  const R = [
+    // 真实内核闭包里出现的形态
+    '^0.1.0-rc.6', '^3.1.1', '5.2.0', '~4.4.7', '>=1.0.0 <1.10.0', '^3.25.0 || ^4.0.0',
+    '>= 2.1.2 < 3.0.0', '>= 4.11', '>=9.0', '^4', '4', '1', '*',
+    // 通配与部分版本
+    '1.2.x', '1.x', '1.2.*', '2.x', '2.*', 'x', 'X', '~1.2', '~1', '^0.1', '^0.0.3', '^0.0',
+    '~0', '>=1.x', '<=1.x', '>=1.2.x', '=1.x', '=1.2.x', '>1.x', '<2.x',
+    '>1', '>1.2', '<2', '<=2', '>4', '<3', '>=2', '<=2.0.0', '>1.0.0',
+    // 预发布与异常输入
+    '^1.2.3-alpha.1', '~1.2.3-rc.1', 'not-a-range!!', 'workspace:*', '^ 1.2.3', '~ 1.2',
+    '1.2.3 || >=2.0.0 <3.0.0',
+  ];
+  const V = [
+    '0.1.0-rc.5', '0.1.0-rc.6', '0.1.0', '0.1.5-rc.1', '0.2.0', '1.0.0', '1.2.3', '1.5.0',
+    '2.0.0', '2.0.1', '3.1.1', '3.25.0', '3.25.28', '4.0.0', '4.1.1', '4.4.7', '4.11.0',
+    '4.11.9', '5.0.0', '5.2.0', '6.21.0', '9.0.0', '9.1.0', '13.7.0', '16.8.0', '17.0.0',
+    '18.0.0', '19.0.0', '20.0.0', '2.1.1', '2.1.2', '2.9.9', '3.0.0', '1.1.0-rc.1',
+    '2.1.2-rc.1', '1.2.3-alpha.2', '0.0.3', '0.0.4', '1.2.0', '1.9.9', '2.5.0', '1.3.0',
+    '1.2.4', '0.0.0', '2.0.0-rc.1', '1.5.0-rc.1',
+  ];
+  const diffs = [];
+  for (const r of R) {
+    for (const v of V) {
+      let expected;
+      try {
+        expected = oracle.satisfies(v, r);
+      } catch {
+        expected = false;
+      }
+      const actual = installer.satisfies(v, r);
+      if (actual !== expected) diffs.push(`${v} in ${JSON.stringify(r)}: mine=${actual} semver=${expected}`);
+    }
+  }
+  assert.deepEqual(diffs, [], `与 npm semver 不一致（${diffs.length} 处）`);
+});
+
 test('semver: 预发布准入规则（范围无预发布段则拒预发布版本）', () => {
   const { satisfies } = installer;
   assert.ok(!satisfies('1.1.0-rc.1', '^1.0.0'), '普通 ^ 不接受预发布');
@@ -192,7 +271,143 @@ test('integrity: sha512 校验通过与篡改必失败', () => {
   );
 });
 
-// ---------------- 4. 全链路 E2E（本地夹具 registry） ----------------
+// ---------------- 5. 可选依赖与平台适配（P24 回归） ----------------
+test('平台适配: os/cpu/libc 过滤（可选依赖专用）', () => {
+  const { matchesPlatform, normalizePlatform } = installer;
+  // npm 平台包有时写 windows/macos，要归一化到 Node 的取值。
+  assert.equal(normalizePlatform('windows'), 'win32');
+  assert.equal(normalizePlatform('macos'), 'darwin');
+  assert.equal(normalizePlatform('win32'), 'win32');
+
+  // 没有约束 = 通用包，永远适配。
+  assert.equal(matchesPlatform({}), true);
+
+  // 当前是 win32/x64（本项目只发 Windows x64）。
+  assert.equal(matchesPlatform({ os: ['win32'], cpu: ['x64'] }), true, 'win32-x64 原生包必须适配');
+  assert.equal(matchesPlatform({ os: ['darwin'], cpu: ['arm64'] }), false, '非本平台包必须被过滤');
+  assert.equal(matchesPlatform({ os: ['linux'], cpu: ['x64'] }), false);
+  assert.equal(matchesPlatform({ os: ['win32'], cpu: ['arm64'] }), false, '架构不符要过滤');
+  // 否定式声明：`!win32` 表示「除 win32 外都行」。
+  assert.equal(matchesPlatform({ os: ['!win32'] }), false);
+  // libc 只对 Linux 有意义；在 Windows 上声明 libc 的包不匹配。
+  assert.equal(matchesPlatform({ libc: ['glibc'] }), false);
+});
+
+test('E2E: optionalDependencies 入闭包 + 平台不适配的静默跳过', async () => {
+  // 复现 P24：sharp 把真正的实现放在可选平台包里（@img/sharp-win32-x64），
+  // 闭包若只跟 dependencies，装出来的内核一启动就因缺原生模块而崩。
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    const name = decodeURIComponent(url.pathname.slice(1));
+    const mk = (manifest) => JSON.stringify({ versions: { [manifest.version]: manifest } });
+    const out = (m) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(mk(m));
+    };
+    if (name === 'root') {
+      out({ name: 'root', version: '1.0.0', optionalDependencies: { 'native-win': '1.0.0', 'native-mac': '1.0.0' } });
+    } else if (name === 'native-win') {
+      out({ name, version: '1.0.0', os: ['win32'], cpu: ['x64'] });
+    } else if (name === 'native-mac') {
+      // 平台不适配：即便存在也不应被下载。
+      out({ name, version: '1.0.0', os: ['darwin'], cpu: ['arm64'] });
+    } else {
+      res.statusCode = 404;
+      res.end('not found');
+    }
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const registry = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const resolved = await installer.resolveClosure(registry, 'root', '1.0.0', () => {});
+    const names = [...resolved.values()].map((n) => n.name);
+    assert.ok(names.includes('root'), '根包应在闭包里');
+    assert.ok(names.includes('native-win'), 'win32-x64 的可选依赖必须入闭包');
+    assert.ok(!names.includes('native-mac'), '平台不适配的可选依赖必须被跳过');
+  } finally {
+    server.close();
+  }
+});
+
+test('E2E: 版本冲突走嵌套安装（P25 回归）', async () => {
+  // 复现 P25：flat 布局下 negotiator@1.1.0 需要的 content-type@2.x
+  // 与 express 需要的 content-type@1.x 无法共存，必须把其中一份嵌套
+  // 到依赖者自己的 node_modules 下，否则内核启动即崩。
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    const name = decodeURIComponent(url.pathname.slice(1));
+    const out = (m) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ versions: { [m.version]: m } }));
+    };
+    if (name === 'app') {
+      out({ name: 'app', version: '1.0.0', dependencies: { shared: '^1.0.0', mid: '^1.0.0' } });
+    } else if (name === 'mid') {
+      out({ name: 'mid', version: '1.1.0', dependencies: { shared: '^2.0.0' } });
+    } else if (name === 'shared') {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        versions: {
+          '1.0.5': { name: 'shared', version: '1.0.5' },
+          '2.1.0': { name: 'shared', version: '2.1.0' },
+        },
+      }));
+    } else {
+      res.statusCode = 404;
+      res.end('not found');
+    }
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const registry = `http://127.0.0.1:${server.address().port}`;
+  try {
+    // app 同时需要 shared@^1 与（经 mid）shared@^2 —— 两种版本无法全扁平。
+    // 根层 key 就是包名；嵌套层才有前缀。
+    const resolved = await installer.resolveClosure(registry, 'app', '1.0.0', () => {});
+    const paths = [...resolved.entries()].map(([k, v]) => `${k} => ${v.name}@${v.version}`);
+    const rootShared = resolved.get('shared');
+    const nestedShared = resolved.get('mid/node_modules/shared');
+    assert.ok(rootShared, `根层应有 shared 的一份；实际: ${paths.join(' | ')}`);
+    assert.equal(rootShared.version, '1.0.5', '先落位的 ^1.0.0 占根层（扁平优先）');
+    assert.ok(nestedShared, `冲突的那份必须嵌套在依赖者之下；实际: ${paths.join(' | ')}`);
+    assert.equal(nestedShared.version, '2.1.0', '嵌套的是 mid 需要的 ^2.0.0');
+    assert.equal(nestedShared.nestedIn, 'mid');
+  } finally {
+    server.close();
+  }
+});
+
+test('E2E: 无冲突时保持全扁平（不额外嵌套）', async () => {
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    const name = decodeURIComponent(url.pathname.slice(1));
+    const out = (m) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ versions: { [m.version]: m } }));
+    };
+    if (name === 'app') out({ name: 'app', version: '1.0.0', dependencies: { a: '^1.0.0', b: '^1.0.0' } });
+    else if (name === 'a') out({ name: 'a', version: '1.0.0', dependencies: { common: '^1.0.0' } });
+    else if (name === 'b') out({ name: 'b', version: '1.0.0', dependencies: { common: '^1.2.0' } });
+    else if (name === 'common') {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ versions: { '1.2.0': { name: 'common', version: '1.2.0' } } }));
+    } else {
+      res.statusCode = 404;
+      res.end('not found');
+    }
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const registry = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const resolved = await installer.resolveClosure(registry, 'app', '1.0.0', () => {});
+    const nested = [...resolved.values()].filter((n) => n.nestedIn !== '');
+    assert.equal(nested.length, 0, `无冲突不应产生嵌套：${nested.map((n) => n.name).join(',')}`);
+    assert.ok(resolved.get('common'), 'common 应在根层');
+  } finally {
+    server.close();
+  }
+});
+
+// ---------------- 6. 全链路 E2E（本地夹具 registry） ----------------
 /** 构造假 dsh 包：bin.js 起 HTTP 200 服务（自检可探活）。 */
 function fakeDshPackageFiles() {
   const binJs = [

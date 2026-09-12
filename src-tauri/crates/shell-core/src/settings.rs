@@ -180,6 +180,21 @@ pub fn set_plugin_enabled(s: &mut AppSettings, id: &str, enabled: bool) {
     s.plugins.enabled.insert(id.to_string(), enabled);
 }
 
+/// Bundled plugin id whose toggle is also mirrored in the system tray
+/// ("Roxy 桌宠" / `dsh-pet-roxy`).
+pub const ROXY_PLUGIN_ID: &str = "dsh-pet-roxy";
+
+/// Whether the Roxy desktop-pet plugin is enabled.
+///
+/// The tray check mark and the settings window both read this, so they can
+/// never disagree. It must go through [`is_plugin_enabled`] — the legacy
+/// `roxy.enabled` field is `skip_serializing` and therefore loses its value
+/// on the first write-back, which made a tray built from it show a stale
+/// check mark.
+pub fn roxy_enabled(s: &AppSettings) -> bool {
+    is_plugin_enabled(s, ROXY_PLUGIN_ID, true)
+}
+
 /// Set the close behavior; values other than `ask`/`tray`/`quit` are ignored.
 pub fn set_close_behavior(s: &mut AppSettings, v: &str) {
     if matches!(v, "ask" | "tray" | "quit") {
@@ -318,6 +333,32 @@ mod tests {
         assert!(!is_plugin_enabled(&s, "p1", true));
         set_plugin_enabled(&mut s, "p2", true);
         assert!(is_plugin_enabled(&s, "p2", false));
+    }
+
+    /// P22 回归：托盘的 Roxy 勾选必须来自 plugins.enabled。
+    ///
+    /// 旧实现读 `settings.roxy.enabled`，而该字段 `skip_serializing`——
+    /// 首次写回后它就永远是默认值 true，于是「取消宠物」后重启又变成勾选。
+    #[test]
+    fn roxy_enabled_reads_plugins_map_not_legacy_field() {
+        let mut s = AppSettings::default();
+        assert!(roxy_enabled(&s), "缺省（内置插件）应为启用");
+
+        set_plugin_enabled(&mut s, ROXY_PLUGIN_ID, false);
+        assert!(!roxy_enabled(&s), "显式禁用必须生效");
+        // 即便 legacy 字段仍是默认 true，也不得影响判定。
+        assert!(s.roxy.enabled, "legacy 字段保持默认，仅用于迁移读取");
+
+        // 写回再读（legacy 字段在磁盘上消失）后仍然稳定。
+        let root = test_root("roxy-domain");
+        let p = root.join("settings.json");
+        write_settings(&p, &s).expect("write settings");
+        assert!(!roxy_enabled(&read_settings(&p)), "写回后仍为禁用");
+
+        set_plugin_enabled(&mut s, ROXY_PLUGIN_ID, true);
+        write_settings(&p, &s).expect("write settings");
+        assert!(roxy_enabled(&read_settings(&p)), "写回后恢复启用");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
