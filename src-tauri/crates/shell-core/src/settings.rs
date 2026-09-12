@@ -29,14 +29,10 @@ pub struct PluginsSettings {
     pub enabled: BTreeMap<String, bool>,
 }
 
-/// Legacy v7 roxy toggle — read for migration, never written back.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct RoxySettings {
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-}
-
-/// The persisted application settings (v8 schema).
+/// The persisted application settings (v8.2 schema).
+///
+/// 旧文件里的 legacy `roxy` 键由 serde 忽略（未知字段不报错）；v8.2 起宠物
+/// 常开，该字段连同迁移逻辑一起移除。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AppSettings {
     /// `ask` | `tray` | `quit` — what happens when the window closes.
@@ -44,19 +40,12 @@ pub struct AppSettings {
     pub close_behavior: String,
     #[serde(default)]
     pub plugins: PluginsSettings,
-    /// Legacy v7 field: read (for migration) but skipped on write.
-    #[serde(default, skip_serializing)]
-    pub roxy: RoxySettings,
     #[serde(default)]
     pub kernel: KernelSettings,
 }
 
 fn default_close_behavior() -> String {
     "ask".to_string()
-}
-
-fn default_enabled() -> bool {
-    true
 }
 
 fn default_registry() -> String {
@@ -71,9 +60,9 @@ fn default_keep_backups() -> u32 {
 pub const REGISTRY_NPMMIRROR: &str = "npmmirror";
 pub const REGISTRY_NPMJS: &str = "npmjs";
 
-/// The bundled plugin id seeded into `plugins.enabled` on migration from a
-/// legacy settings file (v8.0+: tt-bg 已随 0.4.0 移除).
-pub const LEGACY_PLUGIN_IDS: [&str; 1] = ["dsh-pet-roxy"];
+/// The bundled plugin id whose toggle is also mirrored in the system tray
+/// ("Roxy 桌宠" / `dsh-pet-roxy`).
+pub const ROXY_PLUGIN_ID: &str = "dsh-pet-roxy";
 
 impl Default for KernelSettings {
     fn default() -> Self {
@@ -86,20 +75,11 @@ impl Default for KernelSettings {
     }
 }
 
-impl Default for RoxySettings {
-    fn default() -> Self {
-        Self {
-            enabled: default_enabled(),
-        }
-    }
-}
-
 impl Default for AppSettings {
     fn default() -> Self {
         AppSettings {
             close_behavior: default_close_behavior(),
             plugins: PluginsSettings::default(),
-            roxy: RoxySettings::default(),
             kernel: KernelSettings::default(),
         }
     }
@@ -116,6 +96,10 @@ fn sanitize(s: &mut AppSettings) {
     }
     // v8.0：tt-bg 集成已整体移除，剥离历史遗留的开关项。
     s.plugins.enabled.remove("tt-bg");
+    // v8.2：页面宠物常开（用户明令，关闭选项已移除）。旧版本（≤0.4.1）
+    // 可能把 `dsh-pet-roxy: false` 写进设置——升级后读入时一律剥离，
+    // 宠物必然挂载。这是「常开」的第一道防线。
+    s.plugins.enabled.remove(ROXY_PLUGIN_ID);
     if !valid_registry(&s.kernel.registry) {
         s.kernel.registry = default_registry();
     }
@@ -124,22 +108,10 @@ fn sanitize(s: &mut AppSettings) {
     }
 }
 
-/// One-time migration from the legacy v7 schema:
-/// an empty `plugins.enabled` map is seeded from `roxy.enabled`
-/// (tt-bg 集成已在 0.4.0 移除，仅迁移 dsh-pet-roxy).
-fn migrate(s: &mut AppSettings) {
-    if s.plugins.enabled.is_empty() {
-        let roxy_on = s.roxy.enabled;
-        s.plugins
-            .enabled
-            .insert("dsh-pet-roxy".to_string(), roxy_on);
-    }
-}
-
 /// Read settings from `path`. A missing file or a file that fails to parse
-/// yields the fully defaulted settings (which, after migration, enable the
-/// two bundled plugins); missing fields are filled with defaults;
-/// out-of-range values are corrected.
+/// yields the fully defaulted settings; missing fields are filled with
+/// defaults; out-of-range values and revoked toggles are corrected by
+/// [`sanitize`] (页面宠物常开)。
 pub fn read_settings(path: &Path) -> AppSettings {
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
@@ -149,7 +121,6 @@ pub fn read_settings(path: &Path) -> AppSettings {
         Ok(settings) => settings,
         Err(_) => return AppSettings::default(),
     };
-    migrate(&mut settings);
     sanitize(&mut settings);
     settings
 }
@@ -180,17 +151,14 @@ pub fn set_plugin_enabled(s: &mut AppSettings, id: &str, enabled: bool) {
     s.plugins.enabled.insert(id.to_string(), enabled);
 }
 
-/// Bundled plugin id whose toggle is also mirrored in the system tray
-/// ("Roxy 桌宠" / `dsh-pet-roxy`).
-pub const ROXY_PLUGIN_ID: &str = "dsh-pet-roxy";
-
 /// Whether the Roxy desktop-pet plugin is enabled.
 ///
-/// The tray check mark and the settings window both read this, so they can
-/// never disagree. It must go through [`is_plugin_enabled`] — the legacy
-/// `roxy.enabled` field is `skip_serializing` and therefore loses its value
-/// on the first write-back, which made a tray built from it show a stale
-/// check mark.
+/// v8.2 起页面宠物**常开**：设置页与插件列表的开关已移除，[`sanitize`]
+/// 会剥掉历史遗留的 `dsh-pet-roxy` 禁用条目，因此经 [`read_settings`]
+/// 读到的设置里它恒为 true。函数仍从 `plugins.enabled` 计算而非写死
+/// true（P22 的教训：判定必须走唯一事实源）；未过 sanitize 的裸构造
+/// 不受此保证，挂载侧另有防线（`compute_mount_plan` 对内置宠物不产出
+/// 禁用条目）。
 pub fn roxy_enabled(s: &AppSettings) -> bool {
     is_plugin_enabled(s, ROXY_PLUGIN_ID, true)
 }
@@ -234,7 +202,7 @@ mod tests {
         let s = read_settings(&root.join("settings.json"));
         assert_eq!(s.close_behavior, "ask");
         assert!(!s.plugins.enabled.contains_key("tt-bg"), "tt-bg 已移除，不得再种子");
-        assert!(is_plugin_enabled(&s, "dsh-pet-roxy", true));
+        assert!(roxy_enabled(&s), "宠物常开：缺省即启用");
         assert_eq!(s.kernel.registry, "npmmirror");
         assert_eq!(s.kernel.keep_backups, 1);
         assert_eq!(s.kernel.last_checked, None);
@@ -253,37 +221,33 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v7_file_migrates_roxy_into_plugins() {
-        let root = test_root("v7migrate");
+    fn legacy_v7_file_ignored_pet_always_on() {
+        let root = test_root("v7legacy");
         let p = root.join("settings.json");
         fs::create_dir_all(&root).expect("create temp dir");
-        // v7 schema: roxy disabled, kernel.channel/mirror present.
+        // v7 schema: roxy disabled + v8 显式禁用条目（≤0.4.1 的开关写入过）。
+        // v8.2 起宠物常开：legacy 字段与显式禁用条目都必须失效。
         fs::write(
             &p,
-            r#"{"close_behavior":"tray","roxy":{"enabled":false},"kernel":{"channel":"stable","mirror":"https://registry.npmmirror.com"}}"#,
+            r#"{"close_behavior":"tray","roxy":{"enabled":false},"plugins":{"enabled":{"dsh-pet-roxy":false}},"kernel":{"channel":"stable","mirror":"https://registry.npmmirror.com"}}"#,
         )
-        .expect("write v7 json");
+        .expect("write legacy json");
         let s = read_settings(&p);
         assert_eq!(s.close_behavior, "tray");
-        assert!(!is_plugin_enabled(&s, "dsh-pet-roxy", true), "roxy off must migrate to dsh-pet-roxy off");
-        assert!(!s.plugins.enabled.contains_key("tt-bg"), "tt-bg 已移除");
-        assert_eq!(s.kernel.registry, "npmmirror", "v7 kernel block falls back to default registry");
-        // Writing back produces the v8 schema (no `roxy` key, plugins map present).
+        assert!(roxy_enabled(&s), "宠物常开：旧关闭态必须被忽略");
+        assert!(
+            !s.plugins.enabled.contains_key(ROXY_PLUGIN_ID),
+            "禁用条目必须被 sanitize 剥离"
+        );
+        assert_eq!(s.kernel.registry, "npmmirror", "未知内核字段走默认 registry");
+        // 写回后是干净 schema：无 roxy 键、无宠物开关条目；再读稳定。
         write_settings(&p, &s).expect("write back");
         let raw = fs::read_to_string(&p).expect("read raw");
         assert!(!raw.contains("\"roxy\""), "legacy field must not be written back");
-        assert!(raw.contains("\"plugins\""));
-        assert!(raw.contains("\"registry\""));
-
-        // Re-reading the migrated file is stable for all live state. The
-        // legacy `roxy` field is dead after the first write-back (skipped on
-        // serialize, so the second read sees its default) — exclude it.
+        assert!(!raw.contains("dsh-pet-roxy"), "pet toggle must not persist");
         let s2 = read_settings(&p);
-        let mut a = s.clone();
-        let mut b = s2;
-        a.roxy = RoxySettings::default();
-        b.roxy = RoxySettings::default();
-        assert_eq!(b, a, "second read must be stable (modulo legacy roxy)");
+        assert_eq!(s2, s, "second read must be stable");
+        assert!(roxy_enabled(&s2));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -335,29 +299,23 @@ mod tests {
         assert!(is_plugin_enabled(&s, "p2", false));
     }
 
-    /// P22 回归：托盘的 Roxy 勾选必须来自 plugins.enabled。
-    ///
-    /// 旧实现读 `settings.roxy.enabled`，而该字段 `skip_serializing`——
-    /// 首次写回后它就永远是默认值 true，于是「取消宠物」后重启又变成勾选。
+    /// P22 回归（v8.2 改写）：判定必须走 `plugins.enabled` 事实源，而不是
+    /// legacy 的 `roxy.enabled`（skip_serializing，写回即丢）。v8.2 起宠物
+    /// 常开，本测试守住的新不变量是：**含显式禁用条目的设置经写盘→读回后，
+    /// 宠物恒为启用**（覆盖 0.4.1 老用户「关过宠物」的升级路径）。
     #[test]
-    fn roxy_enabled_reads_plugins_map_not_legacy_field() {
+    fn pet_is_always_enabled_after_roundtrip() {
         let mut s = AppSettings::default();
         assert!(roxy_enabled(&s), "缺省（内置插件）应为启用");
 
+        // 旧版开关留下的显式禁用条目：写盘再读回必须被剥离。
         set_plugin_enabled(&mut s, ROXY_PLUGIN_ID, false);
-        assert!(!roxy_enabled(&s), "显式禁用必须生效");
-        // 即便 legacy 字段仍是默认 true，也不得影响判定。
-        assert!(s.roxy.enabled, "legacy 字段保持默认，仅用于迁移读取");
-
-        // 写回再读（legacy 字段在磁盘上消失）后仍然稳定。
-        let root = test_root("roxy-domain");
+        let root = test_root("roxy-always-on");
         let p = root.join("settings.json");
         write_settings(&p, &s).expect("write settings");
-        assert!(!roxy_enabled(&read_settings(&p)), "写回后仍为禁用");
-
-        set_plugin_enabled(&mut s, ROXY_PLUGIN_ID, true);
-        write_settings(&p, &s).expect("write settings");
-        assert!(roxy_enabled(&read_settings(&p)), "写回后恢复启用");
+        let back = read_settings(&p);
+        assert!(roxy_enabled(&back), "读回后宠物必须为启用（sanitize 剥离禁用条目）");
+        assert!(!back.plugins.enabled.contains_key(ROXY_PLUGIN_ID));
         let _ = fs::remove_dir_all(&root);
     }
 

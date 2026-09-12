@@ -2,7 +2,9 @@
 //!
 //! 事实源：settings.plugins.enabled（期望态）+ 文件系统扫描（存在性）。
 //! 开关 = 写设置 → 3s 防抖重启内核（--patch 增减）。内置插件只可禁用，
-//! 不可移除；用户插件移除后进 plugin-trash/<id>-<时间戳>（手工可恢复）。
+//! 不可移除；**页面宠物（dsh-pet-roxy）例外：v8.2 起常开**，不接受禁用
+//! （设置层 sanitize 剥离 + 挂载层不产出禁用条目 + 本命令拒绝，三道防线）。
+//! 用户插件移除后进 plugin-trash/<id>-<时间戳>（手工可恢复）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -70,6 +72,15 @@ pub fn plugin_set_enabled(
     id: String,
     enabled: bool,
 ) -> bool {
+    // v8.2：页面宠物常开，不接受禁用（旧前端残留调用也在此拦下）。
+    if id == shell_core::settings::ROXY_PLUGIN_ID && !enabled {
+        crate::logln!("[plugin] roxy is always-on; disable request rejected");
+        let _ = app.emit(
+            "plugin://error",
+            serde_json::json!({ "error": "页面宠物常开，不可关闭" }),
+        );
+        return false;
+    }
     // 内置坏插件不允许启用；未知 id 由开关时不存在自然无效（--patch 找不到目录）。
     let mut s = shell_core::settings::read_settings(&rt.settings_path);
     set_plugin_enabled(&mut s, &id, enabled);

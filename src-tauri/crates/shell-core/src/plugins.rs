@@ -136,10 +136,25 @@ pub fn parse_insert_ids(patch_yml: &Path) -> Vec<String> {
     ids
 }
 
-/// 写内核「用户 patch 层」（`<dsh-home>/profiles/web/cordis.patch.yml`）：
-/// 对 disabled_ids 里的每个 insert id 生成 `disabled: true` 条目（内核在
-/// bundle 层之后应用本层，同 id 替换/禁用一票否决）。整文件由壳重新生成
-/// （单一事实源 = settings.plugins.enabled），幂等可重跑。
+/// 禁用覆盖层路径（`<dsh-home>/ttshell-disabled.patch.yml`）。
+///
+/// P46：内核 rc.6 的叠层顺序是 bundle → profile 用户层 → home 用户层 →
+/// **--patch 覆盖层（按 argv 顺序，最后者胜）**。写在用户层的
+/// `disabled: true` 会被插件自己的 `--patch` insert（排在更后）覆盖而
+/// 失效。壳因此把禁用条目以**末位 --patch** 再投递一次（即本文件），
+/// 确保同 id 否决真正生效（rc.6 实测：用户层失效、末位覆盖层有效）。
+pub fn disable_overlay_path(dsh_home: &Path) -> PathBuf {
+    dsh_home.join("ttshell-disabled.patch.yml")
+}
+
+/// 写「禁用 patch 层」文件：对 disabled_ids 里的每个 insert id 生成
+/// `disabled: true` 条目（内核同 id 替换/禁用，后应用者胜）。整文件由壳
+/// 重新生成（单一事实源 = settings.plugins.enabled），幂等可重跑。
+///
+/// 调用方写两处（P46 双投递，兼容新旧内核叠层顺序）：
+/// - 旧机制位置 `<dsh-home>/profiles/web/cordis.patch.yml`（rc.6 起该层
+///   排在 --patch 覆盖层之前、对禁用已无效，保留是为兼容旧内核语义）；
+/// - 新机制位置 [`disable_overlay_path`]（作为末位 --patch 传入）。
 pub fn write_user_patch_layer(path: &Path, disabled_ids: &[String]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create profile dir: {e}"))?;
