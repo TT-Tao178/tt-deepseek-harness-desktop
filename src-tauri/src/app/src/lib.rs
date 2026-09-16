@@ -189,10 +189,13 @@ fn compute_mount_plan(
         patch_args.push("--patch".to_string());
         patch_args.push(p.patch_path.to_string_lossy().into_owned());
         // v8.2：页面宠物常开——不管 settings 里残留什么（≤0.4.1 写入过
-        // dsh-pet-roxy:false），内置宠物都不产出禁用条目。settings 层
-        // sanitize 是第一道防线，这里是挂载侧的最终保证。
-        let enabled = p.id != shell_core::settings::ROXY_PLUGIN_ID
-            && shell_core::settings::is_plugin_enabled(
+        // dsh-pet-roxy:false），内置宠物一律视为启用（用户明令）。settings
+        // 层 sanitize 是第一道防线，这里是挂载侧的最终保证。
+        // ⚠ P47：这里必须写 `== ROXY || …`（强制启用）。曾写反成
+        // `!= ROXY && …`，宠物被恒定禁用（release 日志 disabled ids 出现
+        // pet-roxy，洛琪希消失）。有单测 pet_always_mounted 把守。
+        let enabled = p.id == shell_core::settings::ROXY_PLUGIN_ID
+            || shell_core::settings::is_plugin_enabled(
                 settings,
                 &p.id,
                 p.source == shell_core::plugin_discovery::PluginSource::Bundled,
@@ -752,4 +755,109 @@ pub fn run() {
         tauri::RunEvent::Exit => window::stop_supervisor(app_handle),
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_root(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "app-mount-plan-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    /// 造一个可通过 discover 校验的插件目录（package.json + cordis.patch.yml）。
+    fn make_plugin(root: &Path, name: &str, insert_id: &str) {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).expect("mkdir");
+        let pkg = serde_json::json!({ "name": name, "version": "0.1.0" });
+        fs::write(dir.join("package.json"), pkg.to_string()).expect("write pkg");
+        fs::write(
+            dir.join("cordis.patch.yml"),
+            format!("- insert:\n    - id: {insert_id}\n      name: '{name}'\n"),
+        )
+        .expect("write patch");
+    }
+
+    /// P47 回归：页面宠物常开的挂载侧保证。
+    ///
+    /// 守卫曾写反成 `p.id != ROXY && …`，宠物反而恒定产出禁用条目
+    /// （release 实测：disabled ids = ["pet-roxy"]，洛琪希消失）。本测试
+    /// 把正确的语义钉死：**无论 settings 里残留什么，宠物的 --patch 必须
+    /// 在参数里、其 insert id 不得进禁用清单**；禁用覆盖层（若产出）必须是
+    /// 末位 --patch（P46）。
+    #[test]
+    fn pet_always_mounted_even_with_stale_disabled_entry() {
+        let root = test_root("pet-on");
+        let app_root = root.join("app");
+        let app_data = root.join("data");
+        make_plugin(&app_root.join("plugins"), "dsh-pet-roxy", "pet-roxy");
+        make_plugin(&app_data.join("plugins"), "my-tool", "my-tool-row");
+
+        // 模拟 ≤0.4.1 残留：显式禁用条目还在（未过 sanitize 的裸构造）。
+        let mut settings = shell_core::settings::AppSettings::default();
+        shell_core::settings::set_plugin_enabled(
+            &mut settings,
+            shell_core::settings::ROXY_PLUGIN_ID,
+            false,
+        );
+
+        let (patch_args, disabled_ids) =
+            compute_mount_plan(Some(&app_root), &app_data, &settings);
+
+        // 宠物 --patch 必须在，且不是末位覆盖层。
+        let pet_patch = app_root
+            .join("plugins")
+            .join("dsh-pet-roxy")
+            .join("cordis.patch.yml");
+        let pet_pos = patch_args
+            .iter()
+            .position(|a| a.ends_with(&pet_patch.to_string_lossy().to_string()))
+            .expect("pet patch must be mounted");
+        assert_eq!(
+            patch_args[pet_pos - 1],
+            "--patch",
+            "pet patch path must follow a --patch flag"
+        );
+
+        // 宠物 insert id 不得进禁用清单；用户插件的 insert id 正常禁用。
+        assert!(!disabled_ids.iter().any(|id| id == "pet-roxy"));
+        assert!(disabled_ids.contains(&"my-tool-row".to_string()));
+
+        // 有禁用项时，末位 --patch 必须指向禁用覆盖层（P46）。
+        let overlay = shell_core::plugins::disable_overlay_path(&app_data.join("dsh-home"));
+        assert_eq!(
+            patch_args.last().map(String::as_str),
+            Some(overlay.to_string_lossy().as_ref()),
+            "disable overlay must be the trailing --patch"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 全启用（干净 settings）：无禁用条目、不追加覆盖层。
+    #[test]
+    fn clean_settings_mount_everything_without_overlay() {
+        let root = test_root("clean");
+        let app_root = root.join("app");
+        let app_data = root.join("data");
+        make_plugin(&app_root.join("plugins"), "dsh-pet-roxy", "pet-roxy");
+        make_plugin(&app_data.join("plugins"), "my-tool", "my-tool-row");
+
+        let settings = shell_core::settings::AppSettings::default();
+        let (patch_args, disabled_ids) =
+            compute_mount_plan(Some(&app_root), &app_data, &settings);
+
+        // 两个插件各贡献一对 --patch，共 4 个参数，无覆盖层。
+        assert_eq!(patch_args.len(), 4, "exactly two plugin patches");
+        assert!(disabled_ids.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
 }

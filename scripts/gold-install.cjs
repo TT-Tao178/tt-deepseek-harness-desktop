@@ -82,6 +82,7 @@ async function main() {
   // ---- 3. 从安装产物启动内核并探活 ----
   const nodeExe = path.join(installDir, 'kernel', 'node.exe');
   const binJs = path.join(installDir, 'kernel', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+  const petPatch = path.join(installDir, 'plugins', 'dsh-pet-roxy', 'cordis.patch.yml');
   if (!fs.existsSync(nodeExe) || !fs.existsSync(binJs)) {
     console.error('[gold] FAIL: 安装产物缺 kernel/node.exe 或 bin.js');
     process.exit(1);
@@ -113,13 +114,53 @@ async function main() {
   }
   try { fs.closeSync(logFd); } catch {}
   await new Promise((r) => execFile('taskkill', ['/T', '/F', '/PID', String(child.pid)], () => r()));
+  await new Promise((r) => setTimeout(r, 1200));
+
+  // ---- 3b. 宠物挂载检查(P47 后新增):按壳的真实方式
+  // (junction + --patch)启动,断言 /dsh-pet-roxy/config 返回插件 JSON。
+  // 0.4.2 首版因挂载守卫写反,宠物被静默禁用,裸探活发现不了。
+  if (!fs.existsSync(petPatch)) {
+    console.error('[gold] FAIL: 安装产物缺 plugins/dsh-pet-roxy/cordis.patch.yml');
+    process.exit(1);
+  }
+  const petHome = path.join(work, 'dsh-home-pet');
+  const petNm = path.join(petHome, 'node_modules');
+  fs.mkdirSync(petNm, { recursive: true });
+  execFileSync('cmd', ['/c', 'mklink', '/J', path.join(petNm, 'dsh-pet-roxy'), path.join(installDir, 'plugins', 'dsh-pet-roxy')], { stdio: 'ignore' });
+  const petLogFd = fs.openSync(path.join(petHome, 'kernel.log'), 'a');
+  const petPort = await getFreePort();
+  const petChild = spawn(nodeExe, [binJs, '--profile', 'web', '--patch', petPatch, '--port', String(petPort)], {
+    cwd: installDir,
+    env: { ...process.env, DSH_HOME: petHome },
+    stdio: ['ignore', petLogFd, petLogFd],
+    windowsHide: true,
+  });
+  let petOk = false;
+  for (let i = 0; i < 90; i++) {
+    await sleep(500);
+    if (petChild.exitCode !== null) break;
+    const { body } = await getText(petPort, '/dsh-pet-roxy/config');
+    if (body.includes('"ok":true') && body.includes('expressions')) { petOk = true; break; }
+  }
+  if (petOk) {
+    console.log('[gold] PASS: 宠物挂载验证,/dsh-pet-roxy/config 返回插件 JSON(洛琪希在)');
+  } else {
+    console.error('[gold] FAIL: 宠物未挂载(/dsh-pet-roxy/config 未返回插件 JSON)');
+  }
+  try { fs.closeSync(petLogFd); } catch {}
+  await new Promise((r) => execFile('taskkill', ['/T', '/F', '/PID', String(petChild.pid)], () => r()));
 
   // ---- 4. 清理(原生 rd,不用 git-bash rm) ----
   await new Promise((r) => setTimeout(r, 1200));
-  const rd = spawn('cmd', ['/c', 'rd', '/s', '/q', work], { stdio: 'ignore' });
+  const rd = spawn('cmd', ['/c', 'rd', '/s', '/q', work], { stdio: 'ignore', detached: true });
   rd.on('exit', () => console.log('[gold] 清理完成:', work));
+  // rd 异步跑;给 30s 再自行退出,避免上次「rd 没跑完进程先退」的残留。
+  for (let i = 0; i < 30; i++) {
+    await sleep(1000);
+    if (!fs.existsSync(work)) { console.log('[gold] 临时目录已清除'); break; }
+  }
 
-  process.exit(status >= 200 ? 0 : 1);
+  process.exit(petOk && status >= 200 ? 0 : 1);
 }
 
 main().catch((e) => { console.error('[gold] crashed:', e); process.exit(1); });
