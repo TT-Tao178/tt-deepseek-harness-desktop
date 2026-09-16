@@ -12,7 +12,7 @@ const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
 const http = require('node:http');
-const { spawn, execFile } = require('node:child_process');
+const { spawn, execFile, execFileSync } = require('node:child_process');
 
 const installer = process.argv[2];
 if (!installer || !fs.existsSync(installer)) {
@@ -43,6 +43,12 @@ function httpStatus(port) {
     req.on('error', () => resolve(-1));
     req.on('timeout', () => { req.destroy(); resolve(-1); });
   });
+}
+async function getText(port, reqPath, timeoutMs = 3000) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}${reqPath}`, { signal: AbortSignal.timeout(timeoutMs) });
+    return { status: res.status, body: await res.text() };
+  } catch { return { status: 0, body: '' }; }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
