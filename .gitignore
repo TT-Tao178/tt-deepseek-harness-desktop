@@ -17,3 +17,7 @@ src-tauri/target/
 /kernel/node.exe
 /.kernel-test-home/
 /.dsh-tmp/
+
+# 一键脚本仅本地使用,不入库(用户要求)
+/一键启动.cmd
+/一键关闭.cmd
