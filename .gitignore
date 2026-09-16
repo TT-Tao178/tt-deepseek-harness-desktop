@@ -12,3 +12,8 @@ secrets/
 .dsh-home-user/
 mock-user/
 src-tauri/target/
+
+# 仓库清理(0.4.3)增补
+/kernel/node.exe
+/.kernel-test-home/
+/.dsh-tmp/
