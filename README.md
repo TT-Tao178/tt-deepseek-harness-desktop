@@ -1,4 +1,4 @@
-# TT DeepSeek Harness Desktop (v0.4.0)
+# TT DeepSeek Harness Desktop (v0.4.3)
 
 > **非官方项目**：基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`@deepseek-ai/dsh`）的 Windows 桌面封装，与 DeepSeek 官方无隶属关系。素材（Roxy 宠物图）禁商用。
 
@@ -11,19 +11,16 @@
 - **双击即用**：捆绑内核（node.exe + 788 包）随应用分发，自动拉起 + 崩溃自愈（退避 1s/4s/16s ×3）
 - **内核管理**（托盘 → 设置）：检查官方 npm 源全部版本（默认 npmmirror 镜像，可切 npmjs）→ 下载 → sha512 校验（fail-closed，不落盘不解压）→ staging 自检 → 原子切换 → 健康失败自动回滚；保留上一版本备份，一键回滚
 - **插件管理**：列表 / 按名开关（官方用户层 disabled 条目机制）/ 导入本地插件目录（校验 package.json + cordis.patch.yml）/ 移除进 plugin-trash（手工可恢复）；坏插件标红不阻塞启动；启动时自动清理失效 junction（卸载插件/换目录后自愈）
-- **桌面集成**：伊蕾娜图标（托盘 / 任务栏 / 安装器同源 ico）、托盘（显示主窗 / 设置 / Roxy 开关 / 退出）、关闭 × 弹三选项对话框（退出到托盘 / 关闭程序 / 取消，可勾选「不再弹出询问」）、单实例
+- **桌面集成**：伊蕾娜图标（托盘 / 任务栏 / 安装器同源 ico）、托盘（显示主窗 / 设置 / 退出）、关闭 × 弹三选项对话框（退出到托盘 / 关闭程序 / 取消，可勾选「不再弹出询问」）、单实例、页面宠物常开（无开关）
 - **安全**：内核下载校验不过不执行、不跑任何包安装脚本、tar 条目拒绝路径穿越与硬链接、API Key 只进 Windows 凭据管理器（由 DSH Web 内配置）
 
-
-## 一键启动 / 一键关闭
-
-- **一键启动.cmd**：启动应用（已构建 release 优先，其次 debug；应用自带单实例，重复启动会聚焦已有窗口）
-- **一键关闭.cmd**：关闭应用并清理内核/安装器的 node 进程（只匹配本项目内核的命令行，不影响其他 node 程序）
 
 ## 从源码运行 / 测试
 
 ```powershell
 # 前置：Rust stable（GNU 工具链）+ mingw64 在 PATH
+# 构建/重跑前先关闭运行中的实例（文件锁：否则 release 构建 os error 32）
+taskkill /IM tt-dsh-desktop.exe /F 2>nul & rem + 结束命令行含 bin.js 的内核 node 进程
 cargo test --manifest-path src-tauri/Cargo.toml      # Rust 单测
 node --test scripts/test/install-kernel.test.mjs     # 安装器单测（含本地假 registry E2E）
 node scripts/verify-kernel.cjs                       # 内核自举 HTTP 200
@@ -41,7 +38,7 @@ cargo run --manifest-path src-tauri/Cargo.toml       # 开发运行
 
 | 内容 | 路径 |
 |---|---|
-| 全部应用数据 | `%APPDATA%\tt-deepseek-harness-desktop\` |
+| 全部应用数据 | `%APPDATA%\com.tt.deepharness\` |
 | 会话 / 工作区 | 上述目录 `dsh-home\` |
 | 日志 | `logs\main.log`（壳+审计）、`logs\kernel.log`（内核）、`logs\installer-*.log`（更新） |
 | 内核下载缓存 | `kernel-cache\`（只留最近一次成功集合，设置页可清理） |
