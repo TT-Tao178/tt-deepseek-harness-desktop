@@ -842,7 +842,8 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// 全启用（干净 settings）：无禁用条目、不追加覆盖层。
+    /// 全启用（干净 settings，用户插件显式开启——导入插件默认禁用）：
+    /// 无禁用条目、不追加覆盖层。
     #[test]
     fn clean_settings_mount_everything_without_overlay() {
         let root = test_root("clean");
@@ -851,7 +852,8 @@ mod tests {
         make_plugin(&app_root.join("plugins"), "dsh-pet-roxy", "pet-roxy");
         make_plugin(&app_data.join("plugins"), "my-tool", "my-tool-row");
 
-        let settings = shell_core::settings::AppSettings::default();
+        let mut settings = shell_core::settings::AppSettings::default();
+        shell_core::settings::set_plugin_enabled(&mut settings, "my-tool", true);
         let (patch_args, disabled_ids) =
             compute_mount_plan(Some(&app_root), &app_data, &settings);
 
